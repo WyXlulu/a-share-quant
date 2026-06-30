@@ -6,7 +6,7 @@
 
 ## 当前阶段
 
-**Phase 0 — 环境与脚手架**
+**Phase 2 — 回测引擎**
 
 ---
 
@@ -15,22 +15,25 @@
 - [x] GitHub 私有仓库 `a-share-quant` 建立
 - [x] clone 到本地，README / .gitignore(Python) 就位
 - [x] PROJECT / DECISIONS / STATE 三份活文档创建并放入仓库根目录
+- [x] Python 3.11 虚拟环境 `.venv` 建立，基础依赖 akshare / pandas / pyarrow 安装完成
+- [x] Phase 1 数据管道：单只股票取数、沪深300批量取数、十年后复权日线数据落盘
+- [x] 数据质检：生成逐只明细与质检报告，极端值确认为真实市场事件
 
 ---
 
 ## 进行中
 
 - [ ] 四个 gate 决策定稿（见 `PROJECT.md` §3）
-- [ ] Python 环境 + 虚拟环境（.venv）
+- [ ] Phase 2 回测引擎设计
 - [ ] Track B：启动券商开户 / miniQMT 权限 / 程序化报备流程
 
 ---
 
 ## 下一步（按顺序）
 
-1. 填定 gate 决策（券商档位、执行层 Windows 部署、确认数据源与频率）
-2. 建 `.venv`，安装 akshare / pandas，跑通第一个取数脚本（拉一只股票的日线）
-3. 进入 **Phase 1：数据管道**（清洗 + 等比复权对齐 + 落盘）
+1. 设计回测引擎：处理停牌日、最小历史要求、新股上市初期
+2. 填定 gate 决策（券商档位、执行层 Windows 部署、确认数据源与频率）
+3. Track B：继续推进券商开户 / miniQMT 权限 / 程序化报备流程
 
 ---
 
