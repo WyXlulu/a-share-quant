@@ -40,6 +40,13 @@ class DailyBarsResult:
     failure_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class AdapterFrameResult:
+    frame: pd.DataFrame
+    source_id: str
+    errors: list[str]
+
+
 def akshare_revision_id() -> str:
     return f"akshare-{ak.__version__}"
 
@@ -258,3 +265,283 @@ def fetch_exchange_trade_dates() -> list[date]:
     if "trade_date" not in raw_calendar.columns:
         raise ValueError(f"akshare calendar missing trade_date: {list(raw_calendar.columns)}")
     return pd.to_datetime(raw_calendar["trade_date"], errors="raise").dt.date.tolist()
+
+
+def fetch_current_a_share_names() -> AdapterFrameResult:
+    with direct_data_requests():
+        frame = ak.stock_info_a_code_name()
+
+    normalized = frame.rename(columns={"code": "security_id", "name": "name"}).copy()
+    normalized["security_id"] = (
+        normalized["security_id"].astype(str).str.extract(r"(\d{6})", expand=False).str.zfill(6)
+    )
+    normalized = normalized[["security_id", "name"]].dropna(subset=["security_id"])
+    return AdapterFrameResult(
+        frame=normalized.drop_duplicates(subset=["security_id"], keep="last"),
+        source_id="akshare.stock_info_a_code_name",
+        errors=[],
+    )
+
+
+def _normalize_exchange_listing_frame(
+    frame: pd.DataFrame,
+    source_id: str,
+    code_column: str,
+    name_column: str,
+    list_date_column: str,
+    board: str | None = None,
+    board_column: str | None = None,
+) -> pd.DataFrame:
+    normalized = pd.DataFrame(
+        {
+            "security_id": frame[code_column]
+            .astype(str)
+            .str.extract(r"(\d{6})", expand=False)
+            .str.zfill(6),
+            "exchange_name": frame[name_column].astype(str),
+            "list_date": pd.to_datetime(frame[list_date_column], errors="coerce").dt.date,
+            "list_date_source_id": source_id,
+        }
+    )
+    if board_column and board_column in frame.columns:
+        normalized["exchange_board"] = frame[board_column].astype(str)
+    else:
+        normalized["exchange_board"] = board
+    return normalized.dropna(subset=["security_id"]).drop_duplicates(
+        subset=["security_id"], keep="last"
+    )
+
+
+def fetch_exchange_listing_info() -> AdapterFrameResult:
+    errors: list[str] = []
+    frames: list[pd.DataFrame] = []
+
+    with direct_data_requests():
+        sources = [
+            (
+                "akshare.stock_info_sh_name_code.main_board_a",
+                lambda: ak.stock_info_sh_name_code(symbol="主板A股"),
+                "证券代码",
+                "证券简称",
+                "上市日期",
+                "主板",
+                None,
+            ),
+            (
+                "akshare.stock_info_sh_name_code.star_market",
+                lambda: ak.stock_info_sh_name_code(symbol="科创板"),
+                "证券代码",
+                "证券简称",
+                "上市日期",
+                "科创板",
+                None,
+            ),
+            (
+                "akshare.stock_info_sz_name_code.a_share",
+                lambda: ak.stock_info_sz_name_code(symbol="A股列表"),
+                "A股代码",
+                "A股简称",
+                "A股上市日期",
+                None,
+                "板块",
+            ),
+            (
+                "akshare.stock_info_bj_name_code",
+                ak.stock_info_bj_name_code,
+                "证券代码",
+                "证券简称",
+                "上市日期",
+                "北交所",
+                None,
+            ),
+        ]
+
+        for source_id, loader, code_col, name_col, list_col, board, board_col in sources:
+            try:
+                source_frame = loader()
+                frames.append(
+                    _normalize_exchange_listing_frame(
+                        source_frame,
+                        source_id=source_id,
+                        code_column=code_col,
+                        name_column=name_col,
+                        list_date_column=list_col,
+                        board=board,
+                        board_column=board_col,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{source_id}: {type(exc).__name__}: {exc}")
+
+    if frames:
+        combined = pd.concat(frames, ignore_index=True).drop_duplicates(
+            subset=["security_id"], keep="last"
+        )
+    else:
+        combined = pd.DataFrame(
+            columns=[
+                "security_id",
+                "exchange_name",
+                "list_date",
+                "list_date_source_id",
+                "exchange_board",
+            ]
+        )
+
+    return AdapterFrameResult(
+        frame=combined,
+        source_id="akshare.exchange_listing_info",
+        errors=errors,
+    )
+
+
+def fetch_current_st_symbols() -> AdapterFrameResult:
+    errors: list[str] = []
+    sources = [
+        (
+            "akshare.stock_zh_a_st_em",
+            ak.stock_zh_a_st_em,
+            ["代码", "股票代码", "证券代码"],
+            [],
+            "direct_st_list",
+        ),
+        (
+            "akshare.stock_zh_a_spot_em.name_scan",
+            ak.stock_zh_a_spot_em,
+            ["代码", "股票代码", "证券代码"],
+            ["名称", "股票简称", "证券简称"],
+            "name_scan",
+        ),
+        (
+            "akshare.stock_info_a_code_name.name_scan",
+            ak.stock_info_a_code_name,
+            ["code"],
+            ["name"],
+            "name_scan",
+        ),
+    ]
+
+    with direct_data_requests():
+        for source_id, loader, code_columns, name_columns, mode in sources:
+            try:
+                frame = loader()
+                if mode == "direct_st_list":
+                    symbols = _extract_six_digit_codes(frame, code_columns)
+                    if symbols:
+                        return AdapterFrameResult(
+                            frame=pd.DataFrame({"security_id": symbols}),
+                            source_id=source_id,
+                            errors=errors,
+                        )
+                    errors.append(f"{source_id}: no ST symbols parsed")
+                    continue
+
+                normalized = _normalize_code_name_frame(frame, code_columns, name_columns)
+                normalized["is_st"] = normalized["name"].map(_is_st_name)
+                st_frame = normalized.loc[normalized["is_st"], ["security_id"]].copy()
+                return AdapterFrameResult(frame=st_frame, source_id=source_id, errors=errors)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{source_id}: {type(exc).__name__}: {exc}")
+
+    return AdapterFrameResult(
+        frame=pd.DataFrame(columns=["security_id"]),
+        source_id="UNAVAILABLE",
+        errors=errors,
+    )
+
+
+def fetch_current_status_overrides() -> AdapterFrameResult:
+    errors: list[str] = []
+    frames: list[pd.DataFrame] = []
+    successful_sources: list[str] = []
+
+    with direct_data_requests():
+        try:
+            source_id = "akshare.stock_zh_a_stop_em"
+            frame = ak.stock_zh_a_stop_em()
+            symbols = _extract_six_digit_codes(frame, ["代码", "股票代码", "证券代码"])
+            if symbols:
+                frames.append(pd.DataFrame({"security_id": symbols, "status": "停牌"}))
+            successful_sources.append(source_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{source_id}: {type(exc).__name__}: {exc}")
+
+        try:
+            source_id = "akshare.stock_info_a_code_name.delist_name_scan"
+            frame = ak.stock_info_a_code_name()
+            normalized = _normalize_code_name_frame(frame, ["code"], ["name"])
+            delisted = normalized.loc[
+                normalized["name"].map(_is_delisted_name), ["security_id"]
+            ].copy()
+            if not delisted.empty:
+                delisted["status"] = "退市"
+                frames.append(delisted)
+            successful_sources.append(source_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{source_id}: {type(exc).__name__}: {exc}")
+
+    if frames:
+        combined = pd.concat(frames, ignore_index=True).drop_duplicates(
+            subset=["security_id"], keep="last"
+        )
+    else:
+        combined = pd.DataFrame(columns=["security_id", "status"])
+
+    return AdapterFrameResult(
+        frame=combined,
+        source_id=";".join(successful_sources) if successful_sources else "UNAVAILABLE",
+        errors=errors,
+    )
+
+
+def fetch_current_suspended_symbols() -> AdapterFrameResult:
+    status_overrides = fetch_current_status_overrides()
+    suspended = status_overrides.frame.loc[
+        status_overrides.frame["status"].eq("停牌"), ["security_id"]
+    ].copy()
+    return AdapterFrameResult(
+        frame=suspended,
+        source_id=status_overrides.source_id,
+        errors=status_overrides.errors,
+    )
+
+
+def _normalize_code_name_frame(
+    frame: pd.DataFrame,
+    code_columns: list[str],
+    name_columns: list[str],
+) -> pd.DataFrame:
+    code_column = next((column for column in code_columns if column in frame.columns), None)
+    name_column = next((column for column in name_columns if column in frame.columns), None)
+    if code_column is None or name_column is None:
+        raise ValueError(
+            f"missing code/name columns; columns={list(frame.columns)}, "
+            f"code_candidates={code_columns}, name_candidates={name_columns}"
+        )
+
+    normalized = pd.DataFrame(
+        {
+            "security_id": frame[code_column]
+            .astype(str)
+            .str.extract(r"(\d{6})", expand=False)
+            .str.zfill(6),
+            "name": frame[name_column].astype(str),
+        }
+    )
+    return normalized.dropna(subset=["security_id"]).drop_duplicates(
+        subset=["security_id"], keep="last"
+    )
+
+
+def _is_st_name(name: object) -> bool:
+    if pd.isna(name):
+        return False
+    normalized = str(name).upper().replace(" ", "")
+    return normalized.startswith("ST") or normalized.startswith("*ST")
+
+
+def _is_delisted_name(name: object) -> bool:
+    if pd.isna(name):
+        return False
+    normalized = str(name).upper().replace(" ", "")
+    return "退" in normalized
