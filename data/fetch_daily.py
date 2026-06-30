@@ -10,7 +10,9 @@ import pandas as pd
 
 
 INDEX_SYMBOL = "000300"
-OUTPUT_PATH = Path("data/raw/hs300_daily.parquet")
+START_DATE = date(2015, 6, 30)
+END_DATE = date(2026, 6, 30)
+OUTPUT_PATH = Path("data/raw/hs300_daily_10y.parquet")
 REQUEST_DELAY_SECONDS = (0.2, 0.5)
 
 
@@ -60,8 +62,8 @@ def fetch_daily(symbol: str, start: date, end: date) -> pd.DataFrame:
 
 
 def main() -> None:
-    end = date.today()
-    start = one_year_ago(end)
+    start = START_DATE
+    end = END_DATE
     symbols = get_hs300_symbols()
 
     frames: list[pd.DataFrame] = []
