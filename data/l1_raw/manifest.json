@@ -1,0 +1,49 @@
+{
+  "manifest_version": 1,
+  "created_at": "2026-06-30T10:34:55.705959+00:00",
+  "snapshot_id": "20260630_akshare_raw",
+  "price_basis": "RAW_UNADJUSTED",
+  "bar_frequency": "daily",
+  "source_id": "akshare.raw_daily_adapter",
+  "source_ids_observed": [
+    "akshare.stock_zh_a_daily_sina",
+    "akshare.stock_zh_a_hist"
+  ],
+  "revision_id": "akshare-1.18.64",
+  "declared_safety_latency_version": "daily_bar_t1500_asia_shanghai_v1",
+  "start_date": "2015-06-30",
+  "end_date": "2026-06-30",
+  "universe": {
+    "index_symbol": "000300",
+    "source": "当前沪深300成分(EXPLORATORY_TAINTED,非时点成分)",
+    "constituents_source_id": "akshare.index_stock_cons_csindex",
+    "constituents_source_errors": [],
+    "security_count_requested": 300,
+    "security_count_succeeded": 300,
+    "security_count_failed": 0
+  },
+  "source_capability": {
+    "source_id": "akshare.raw_daily_adapter",
+    "provider_fallback_order": [
+      "akshare.stock_zh_a_hist",
+      "akshare.stock_zh_a_daily_sina"
+    ],
+    "source_ids_observed": [
+      "akshare.stock_zh_a_daily_sina",
+      "akshare.stock_zh_a_hist"
+    ],
+    "bar_frequency": "daily",
+    "price_basis": "RAW_UNADJUSTED",
+    "schema": "daily_bar_raw",
+    "future_frequency_policy": "same_schema_required_for_minute_or_other_bars",
+    "time_anchor_policy": "event_ts_and_available_at_are_timezone_aware_second_precision_timestamps"
+  },
+  "rows": 801600,
+  "calendar": {
+    "source_id": "akshare.tool_trade_date_hist_sina",
+    "path": "data/l1_raw/trading_calendar.parquet",
+    "trading_day_count": 2672
+  },
+  "output_path": "data/l1_raw/daily_bar_raw.parquet",
+  "failures": []
+}

@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data artifacts
+data/l1_raw/*.parquet
+data/quarantine/**/*.parquet

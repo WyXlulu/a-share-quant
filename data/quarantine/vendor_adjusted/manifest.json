@@ -1,0 +1,33 @@
+{
+  "manifest_version": 1,
+  "created_at": "2026-06-30T08:14:14.715255+00:00",
+  "price_basis": "VENDOR_ADJUSTED",
+  "source_semantics": "UNVERIFIED_FOR_PIT",
+  "read_policy": "FORBIDDEN_FOR_L1_FEATURE_EXECUTION",
+  "files": [
+    {
+      "file_name": "600519.parquet",
+      "original_path": "data/raw/600519.parquet",
+      "quarantine_path": "data/quarantine/vendor_adjusted/600519.parquet",
+      "status": "moved",
+      "size_bytes": 22364,
+      "sha256": "30c20a3949a9697e68690dc8d30bc91a2da94ab6454a38a5554617b9edb8babd"
+    },
+    {
+      "file_name": "hs300_daily.parquet",
+      "original_path": "data/raw/hs300_daily.parquet",
+      "quarantine_path": "data/quarantine/vendor_adjusted/hs300_daily.parquet",
+      "status": "moved",
+      "size_bytes": 2886970,
+      "sha256": "1b8d767fa0229cc7112e2a1d65b25c4b11bb86b60af5632106ac0115a6207a49"
+    },
+    {
+      "file_name": "hs300_daily_10y.parquet",
+      "original_path": "data/raw/hs300_daily_10y.parquet",
+      "quarantine_path": "data/quarantine/vendor_adjusted/hs300_daily_10y.parquet",
+      "status": "moved",
+      "size_bytes": 21233877,
+      "sha256": "cfd2a176fdc11234808c32f60ede9632446b17e8ecd98ff2bbaa424f0197ae1c"
+    }
+  ]
+}
