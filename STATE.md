@@ -6,7 +6,7 @@
 
 ## 当前阶段
 
-**Phase 0 — 数据与时钟地基**
+**Phase 1 — 事件驱动引擎(轨道A)**
 
 ---
 
@@ -22,22 +22,21 @@
 - [x] src 骨架、hfq 隔离、未复权 L1 面板重建、交易日历完成
 - [x] L1 四关验收：8 个单元测试通过、699453 正常行、除权日跳变坐实未复权、`event_ts` / `available_at` 为 `+08:00` 时区 timestamp
 - [x] security master：300/300 建档，板块由代码前缀判定可靠，当前 ST 真实快照为 0；历史时点 ST 仍缺，待 Tushare 等时点数据源补齐
+- [x] PITDataPortal：作为唯一 PIT 只读访问层，按 `asof_ts` 与字段级 `available_at` 做 as-of 过滤，缺 `available_at` fail-closed
+- [x] Phase 0 整体完成：四件套齐备（未复权 L1 面板、security master、交易日历、PITDataPortal as-of 闸门），全部验收通过、可复现
 
 ---
 
 ## 进行中
 
-- [ ] Phase 0 数据与时钟地基
-- [ ] 四个 gate 决策定稿（见 `PROJECT.md` §3）
+- [ ] Phase 1 — 事件驱动引擎(轨道A)
 - [ ] Track B：启动券商开户 / miniQMT 权限 / 程序化报备流程
 
 ---
 
 ## 下一步（按顺序）
 
-1. PITDataPortal：按 `asof_ts` 截断的数据访问层
-2. 填定 gate 决策（券商档位、执行层 Windows 部署、确认数据源与频率）
-3. Track B：继续推进券商开户 / miniQMT 权限 / 程序化报备流程
+1. 搭事件驱动时钟骨架：按交易日逐日推进，通过 PITDataPortal 只取 ≤ 当日数据
 
 ---
 

@@ -91,3 +91,11 @@
 - **决定**：当前 ST / 状态已通过真实接口 `stock_info_a_code_name` 的当前快照取得真值，沪深300 当前 ST 数为 0，已确认不是占位值；但该数据仍只标记为 `CURRENT_SNAPSHOT_ONLY`，并保留 `EXPLORATORY_TAINTED`。
 - **理由**：当前快照只能回答“现在是否 ST / 退市”，不能回答历史任一 `asof_ts` 的 ST / 状态。用于可信回测的历史时点判断仍需要 Tushare 等具备时点能力的数据源补齐。
 - **备选**：把当前快照当作历史状态使用（未来函数风险，放弃）；在没有真实快照时静默占位（不可审计，放弃）。
+
+---
+
+## 2026-06-30 | PITDataPortal 作为唯一 PIT 只读访问层
+
+- **决定**：PITDataPortal 是上层访问 PIT 数据的唯一只读入口；对缺少 `available_at` 的表一律 fail-closed，并按字段级 `available_at` 做 as-of 过滤：稳定属性按上市日可见，`CURRENT_SNAPSHOT_ONLY` 字段按快照拉取日可见。
+- **理由**：Portal 是整个防泄露架构的物理闸门，保证任何 `available_at > asof_ts` 的数据不会流向特征、策略或执行层；字段级可见性让 security master 这类宽表既保留稳定属性，又阻断当前快照字段穿越历史。
+- **备选**：上层直接读取 parquet 或把缺时间戳字段默认视为可见（会绕过防泄露闸门，放弃）。
