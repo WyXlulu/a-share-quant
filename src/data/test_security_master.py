@@ -11,6 +11,7 @@ from src.data.build_security_master import (
     POINT_IN_TIME_CURRENT_SNAPSHOT_ONLY,
     board_from_security_id,
 )
+from src.data.pit_data_portal import PITDataPortal
 
 
 class SecurityMasterTest(unittest.TestCase):
@@ -65,6 +66,57 @@ class SecurityMasterTest(unittest.TestCase):
                 self.manifest["field_capabilities"]["is_st"]["source"],
                 current_st_source,
             )
+
+    def test_available_at_columns_are_present_and_timezone_aware(self) -> None:
+        required_columns = [
+            "available_at",
+            "board_available_at",
+            "list_date_available_at",
+            "delist_date_available_at",
+            "is_st_available_at",
+            "status_available_at",
+        ]
+        for column in required_columns:
+            self.assertIn(column, self.security_master.columns)
+            self.assertTrue(self.security_master[column].astype(str).str.endswith("+08:00").all())
+
+        snapshot_available_at = self.manifest["snapshot_available_at"]
+        self.assertTrue(self.security_master["is_st_available_at"].eq(snapshot_available_at).all())
+        self.assertTrue(self.security_master["status_available_at"].eq(snapshot_available_at).all())
+        self.assertIn("available_at_semantics", self.manifest)
+
+        moutai = self.security_master.loc[self.security_master["security_id"].eq("600519")].iloc[0]
+        self.assertEqual(moutai["list_date_available_at"], f"{moutai['list_date']}T15:00:00+08:00")
+        self.assertEqual(moutai["board_available_at"], moutai["list_date_available_at"])
+
+    def test_pit_portal_queries_security_master_and_masks_current_snapshot_before_available_at(self) -> None:
+        snapshot_available_at = pd.Timestamp(self.manifest["snapshot_available_at"])
+        before_snapshot = (snapshot_available_at - pd.Timedelta(seconds=1)).isoformat()
+        after_snapshot = (snapshot_available_at + pd.Timedelta(seconds=1)).isoformat()
+        portal = PITDataPortal()
+
+        before = portal.query(
+            "security_master",
+            before_snapshot,
+            security_ids=["600519"],
+            columns=["security_id", "board", "is_st", "status"],
+        )
+        self.assertEqual(before["security_id"].tolist(), ["600519"])
+        self.assertFalse(before["board"].isna().any())
+        self.assertTrue(before["is_st"].isna().all())
+        self.assertTrue(before["status"].isna().all())
+        self.assertTrue(before["is_st_point_in_time_capability"].eq(POINT_IN_TIME_CURRENT_SNAPSHOT_ONLY).all())
+
+        after = portal.query(
+            "security_master",
+            after_snapshot,
+            security_ids=["600519"],
+            columns=["security_id", "is_st", "status"],
+        )
+        self.assertEqual(after["security_id"].tolist(), ["600519"])
+        self.assertFalse(after["is_st"].isna().any())
+        self.assertFalse(after["status"].isna().any())
+        self.assertTrue(after["status_evidence_level"].eq(EXPLORATORY_TAINTED).all())
 
 
 if __name__ == "__main__":

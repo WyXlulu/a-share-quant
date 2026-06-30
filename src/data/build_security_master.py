@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -21,6 +21,7 @@ L1_DAILY_BAR_PATH = Path("data/l1_raw/daily_bar_raw.parquet")
 OUTPUT_PATH = Path("data/l1_raw/security_master.parquet")
 MANIFEST_PATH = Path("data/l1_raw/security_master_manifest.json")
 SNAPSHOT_ID = "20260630_security_master_akshare"
+UNKNOWN_LIST_DATE_AVAILABLE_AT = "1990-12-19T15:00:00+08:00"
 
 POINT_IN_TIME_CURRENT_SNAPSHOT_ONLY = "CURRENT_SNAPSHOT_ONLY"
 POINT_IN_TIME_STABLE_BY_CODE_PREFIX = "STABLE_BY_CODE_PREFIX"
@@ -31,6 +32,22 @@ BEST_EFFORT_RELIABLE = "BEST_EFFORT_RELIABLE"
 
 def now_shanghai_iso() -> str:
     return datetime.now(SHANGHAI_TZ).replace(microsecond=0).isoformat()
+
+
+def shanghai_close_iso(day: date) -> str:
+    return datetime.combine(day, time(15, 0), tzinfo=SHANGHAI_TZ).isoformat()
+
+
+def snapshot_date_from_id(snapshot_id: str) -> date:
+    snapshot_date = snapshot_id.split("_", maxsplit=1)[0]
+    return datetime.strptime(snapshot_date, "%Y%m%d").date()
+
+
+def available_at_from_date(value: object) -> str:
+    timestamp = pd.to_datetime(value, errors="coerce")
+    if pd.isna(timestamp):
+        return UNKNOWN_LIST_DATE_AVAILABLE_AT
+    return shanghai_close_iso(timestamp.date())
 
 
 def board_from_security_id(security_id: str) -> str:
@@ -56,6 +73,7 @@ def _read_l1_security_ids() -> list[str]:
 
 def build_security_master() -> dict[str, object]:
     as_of = now_shanghai_iso()
+    snapshot_available_at = shanghai_close_iso(snapshot_date_from_id(SNAPSHOT_ID))
     security_ids = _read_l1_security_ids()
     master = pd.DataFrame({"security_id": security_ids})
 
@@ -90,6 +108,15 @@ def build_security_master() -> dict[str, object]:
         )
         master["status"] = master["security_id"].map(override_map).fillna(master["status"])
 
+    master["available_at"] = master["list_date"].map(available_at_from_date)
+    list_date_missing_count = int(pd.to_datetime(master["list_date"], errors="coerce").isna().sum())
+    master["board_available_at"] = master["available_at"]
+    master["list_date_available_at"] = master["available_at"]
+    master["delist_date_available_at"] = master["delist_date"].map(available_at_from_date)
+    master.loc[master["delist_date"].isna(), "delist_date_available_at"] = master["available_at"]
+    master["is_st_available_at"] = snapshot_available_at
+    master["status_available_at"] = snapshot_available_at
+
     master["board_as_of"] = as_of
     master["board_point_in_time_capability"] = POINT_IN_TIME_STABLE_BY_CODE_PREFIX
     master["board_evidence_level"] = BEST_EFFORT_RELIABLE
@@ -116,18 +143,24 @@ def build_security_master() -> dict[str, object]:
         "board",
         "is_st",
         "status",
+        "available_at",
+        "board_available_at",
         "board_as_of",
         "board_point_in_time_capability",
         "board_evidence_level",
+        "is_st_available_at",
         "is_st_as_of",
         "is_st_point_in_time_capability",
         "is_st_evidence_level",
+        "status_available_at",
         "status_as_of",
         "status_point_in_time_capability",
         "status_evidence_level",
+        "list_date_available_at",
         "list_date_as_of",
         "list_date_point_in_time_capability",
         "list_date_evidence_level",
+        "delist_date_available_at",
         "delist_date_as_of",
         "delist_date_point_in_time_capability",
         "delist_date_evidence_level",
@@ -150,6 +183,27 @@ def build_security_master() -> dict[str, object]:
         "output_path": OUTPUT_PATH.as_posix(),
         "security_count": int(len(master)),
         "l1_daily_bar_path": L1_DAILY_BAR_PATH.as_posix(),
+        "snapshot_available_at": snapshot_available_at,
+        "unknown_list_date_available_at": UNKNOWN_LIST_DATE_AVAILABLE_AT,
+        "list_date_missing_count": list_date_missing_count,
+        "available_at_semantics": {
+            "row_available_at": (
+                "Structural visibility for stable security identity attributes. "
+                "Uses list_date close in Asia/Shanghai; missing list_date uses "
+                f"{UNKNOWN_LIST_DATE_AVAILABLE_AT} and is counted in list_date_missing_count."
+            ),
+            "stable_fields": {
+                "fields": ["list_date", "delist_date", "board"],
+                "available_at": "corresponding event/list_date close in Asia/Shanghai",
+            },
+            "current_snapshot_fields": {
+                "fields": ["is_st", "status"],
+                "available_at": (
+                    "snapshot date close in Asia/Shanghai. Values reflect only the pull-time "
+                    "current snapshot and are not historical point-in-time facts."
+                ),
+            },
+        },
         "source_ids": {
             "names": names.source_id,
             "listing_info": listings.source_id,
@@ -167,27 +221,32 @@ def build_security_master() -> dict[str, object]:
                 "source": "code_prefix_rule",
                 "point_in_time_capability": POINT_IN_TIME_STABLE_BY_CODE_PREFIX,
                 "evidence_level": BEST_EFFORT_RELIABLE,
+                "available_at_semantics": "board_available_at = list_date close, or conservative fallback when list_date is missing",
             },
             "list_date": {
                 "source": "akshare exchange listing tables",
                 "point_in_time_capability": POINT_IN_TIME_ONE_TIME_EVENT,
                 "evidence_level": BEST_EFFORT_RELIABLE,
+                "available_at_semantics": "list_date_available_at = list_date close, or conservative fallback when list_date is missing",
             },
             "delist_date": {
                 "source": "not present for current HS300 universe",
                 "point_in_time_capability": POINT_IN_TIME_ONE_TIME_EVENT,
                 "evidence_level": BEST_EFFORT_RELIABLE,
+                "available_at_semantics": "delist_date_available_at = delist_date close when present; otherwise row structural available_at",
             },
             "is_st": {
                 "source": st_symbols.source_id,
                 "point_in_time_capability": POINT_IN_TIME_CURRENT_SNAPSHOT_ONLY,
                 "evidence_level": EXPLORATORY_TAINTED,
+                "available_at_semantics": "is_st_available_at = snapshot date close; not visible before that asof_ts",
                 "usage_warning": "非时点 ST 状态, 不得用于可信回测的历史时点判断",
             },
             "status": {
                 "source": status_overrides.source_id,
                 "point_in_time_capability": POINT_IN_TIME_CURRENT_SNAPSHOT_ONLY,
                 "evidence_level": EXPLORATORY_TAINTED,
+                "available_at_semantics": "status_available_at = snapshot date close; not visible before that asof_ts",
                 "usage_warning": "非时点交易状态, 不得用于可信回测的历史时点判断",
             },
         },

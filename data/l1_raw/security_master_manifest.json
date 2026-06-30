@@ -1,10 +1,31 @@
 {
   "manifest_version": 1,
-  "created_at": "2026-06-30T11:35:18+00:00",
+  "created_at": "2026-06-30T11:58:22+00:00",
   "snapshot_id": "20260630_security_master_akshare",
   "output_path": "data/l1_raw/security_master.parquet",
   "security_count": 300,
   "l1_daily_bar_path": "data/l1_raw/daily_bar_raw.parquet",
+  "snapshot_available_at": "2026-06-30T15:00:00+08:00",
+  "unknown_list_date_available_at": "1990-12-19T15:00:00+08:00",
+  "list_date_missing_count": 0,
+  "available_at_semantics": {
+    "row_available_at": "Structural visibility for stable security identity attributes. Uses list_date close in Asia/Shanghai; missing list_date uses 1990-12-19T15:00:00+08:00 and is counted in list_date_missing_count.",
+    "stable_fields": {
+      "fields": [
+        "list_date",
+        "delist_date",
+        "board"
+      ],
+      "available_at": "corresponding event/list_date close in Asia/Shanghai"
+    },
+    "current_snapshot_fields": {
+      "fields": [
+        "is_st",
+        "status"
+      ],
+      "available_at": "snapshot date close in Asia/Shanghai. Values reflect only the pull-time current snapshot and are not historical point-in-time facts."
+    }
+  },
   "source_ids": {
     "names": "akshare.stock_info_a_code_name",
     "listing_info": "akshare.exchange_listing_info",
@@ -26,28 +47,33 @@
     "board": {
       "source": "code_prefix_rule",
       "point_in_time_capability": "STABLE_BY_CODE_PREFIX",
-      "evidence_level": "BEST_EFFORT_RELIABLE"
+      "evidence_level": "BEST_EFFORT_RELIABLE",
+      "available_at_semantics": "board_available_at = list_date close, or conservative fallback when list_date is missing"
     },
     "list_date": {
       "source": "akshare exchange listing tables",
       "point_in_time_capability": "ONE_TIME_EVENT_BEST_EFFORT",
-      "evidence_level": "BEST_EFFORT_RELIABLE"
+      "evidence_level": "BEST_EFFORT_RELIABLE",
+      "available_at_semantics": "list_date_available_at = list_date close, or conservative fallback when list_date is missing"
     },
     "delist_date": {
       "source": "not present for current HS300 universe",
       "point_in_time_capability": "ONE_TIME_EVENT_BEST_EFFORT",
-      "evidence_level": "BEST_EFFORT_RELIABLE"
+      "evidence_level": "BEST_EFFORT_RELIABLE",
+      "available_at_semantics": "delist_date_available_at = delist_date close when present; otherwise row structural available_at"
     },
     "is_st": {
       "source": "akshare.stock_info_a_code_name.name_scan",
       "point_in_time_capability": "CURRENT_SNAPSHOT_ONLY",
       "evidence_level": "EXPLORATORY_TAINTED",
+      "available_at_semantics": "is_st_available_at = snapshot date close; not visible before that asof_ts",
       "usage_warning": "非时点 ST 状态, 不得用于可信回测的历史时点判断"
     },
     "status": {
       "source": "akshare.stock_info_a_code_name.delist_name_scan",
       "point_in_time_capability": "CURRENT_SNAPSHOT_ONLY",
       "evidence_level": "EXPLORATORY_TAINTED",
+      "available_at_semantics": "status_available_at = snapshot date close; not visible before that asof_ts",
       "usage_warning": "非时点交易状态, 不得用于可信回测的历史时点判断"
     }
   },
