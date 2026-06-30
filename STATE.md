@@ -21,6 +21,7 @@
 - [x] 回测引擎设计规范：`docs/BACKTEST_DESIGN.md` 冻结为 V3.0.2 实施基准
 - [x] src 骨架、hfq 隔离、未复权 L1 面板重建、交易日历完成
 - [x] L1 四关验收：8 个单元测试通过、699453 正常行、除权日跳变坐实未复权、`event_ts` / `available_at` 为 `+08:00` 时区 timestamp
+- [x] security master：300/300 建档，板块由代码前缀判定可靠，当前 ST 真实快照为 0；历史时点 ST 仍缺，待 Tushare 等时点数据源补齐
 
 ---
 
@@ -34,7 +35,7 @@
 
 ## 下一步（按顺序）
 
-1. security master：证券生命周期（上市日 / 退市日）、板块、ST 状态
+1. PITDataPortal：按 `asof_ts` 截断的数据访问层
 2. 填定 gate 决策（券商档位、执行层 Windows 部署、确认数据源与频率）
 3. Track B：继续推进券商开户 / miniQMT 权限 / 程序化报备流程
 
