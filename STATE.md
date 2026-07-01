@@ -24,6 +24,7 @@
 - [x] security master：300/300 建档，板块由代码前缀判定可靠，当前 ST 真实快照为 0；历史时点 ST 仍缺，待 Tushare 等时点数据源补齐
 - [x] PITDataPortal：作为唯一 PIT 只读访问层，按 `asof_ts` 与字段级 `available_at` 做 as-of 过滤，缺 `available_at` fail-closed
 - [x] Phase 0 整体完成：四件套齐备（未复权 L1 面板、security master、交易日历、PITDataPortal as-of 闸门），全部验收通过、可复现
+- [x] 事件驱动时钟骨架：按真实交易日历逐日推进；回调侧只能用固定 `asof_ts` 的 ctx.portal，不能自行传 `asof_ts`；双道防未来验证完成（Portal `available_at` 过滤 + `daily_bar_raw.trade_date <= T` 兜底）；22 个单元测试通过
 
 ---
 
@@ -36,7 +37,7 @@
 
 ## 下一步（按顺序）
 
-1. 搭事件驱动时钟骨架：按交易日逐日推进，通过 PITDataPortal 只取 ≤ 当日数据
+1. 哑策略 + 订单意图：固定确定性非收益型策略产生 `OrderIntent`
 
 ---
 
