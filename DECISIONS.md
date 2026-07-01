@@ -107,3 +107,11 @@
 - **决定**：涨跌停开盘拒单暂只按 `security_master.board` 的板块限幅处理（主板 10% / 创业板与科创板 20% / 北交所 30%），暂不实现 ST 股 5% 限幅。
 - **理由**：当前 `security_master.is_st` 是 `CURRENT_SNAPSHOT_ONLY` 污染字段，不可用于历史时点判定；沪深300当前 ST = 0，历史个别 ST 段会被按板块宽松限幅处理，属于已知有界小偏差。待接入具备时点能力的 ST 数据（如 Tushare）后，再补上 ST 5% 限幅。
 - **备选**：直接用当前快照 `is_st` 判断历史 ST（未来函数风险，放弃）；在没有 PIT ST 数据前硬编码 ST 区间（不可审计，放弃）。
+
+---
+
+## 2026-07-01 | L2 公司行动台账为 best-effort
+
+- **决定**：L2 公司行动台账先以 best-effort 形式进入 L2，整体标记 `EXPLORATORY_TAINTED`；下一步账本逻辑不处理未识别或未支持类型，遇到时以 `UNSUPPORTED_CORPORATE_EVENT` 阻断。
+- **理由**：当前 akshare 台账已覆盖沪深300中 295/300 只股票、3075 条记录，可支撑分红/送转账本的第一版实现，但完整性和精确 PIT 可得时点未经逐 provider 人工核验。已知缺口包括：`SPLIT` 未被接口独立识别（A 股拆股罕见，多为送转并已归入 `STOCK_DIVIDEND`）；`MERGER` / `DELIST` 未覆盖；`RIGHTS_ISSUE` 仅通过 Sina 配股接口 best-effort；5 只次新股（001280 / 688047 / 688506 / 688521 / 688981）无记录；精确 `available_at` 披露时点未逐 provider 核验。
+- **备选**：等待 Tushare 等更完整数据源再实现账本（会阻塞主线，放弃）；把未覆盖类型静默当作无事件（会污染回测账本，放弃）。后续接入更完整数据源（如 Tushare）后补齐缺口。
