@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -10,10 +11,95 @@ import pandas as pd
 from src.calendar import trading_calendar_from_dates
 from src.data import PITDataPortal
 from src.domain import TradeStatus
-from src.engine import FillLedgerEntry, OrderIntent, T1OpenExecutor
+from src.engine import FeeSchedule, FillLedgerEntry, OrderIntent, T1OpenExecutor
 
 
 class T1OpenExecutorTest(unittest.TestCase):
+    def test_buy_fee_has_commission_and_transfer_fee_without_stamp_duty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(tmpdir, _fee_rows())
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+
+            fill = executor.execute_one(
+                _intent("000001", date(2026, 6, 29), side="buy", quantity=100)
+            )
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.gross_amount, Decimal("1000.00"))
+            self.assertEqual(fill.commission, Decimal("5.00"))
+            self.assertEqual(fill.stamp_duty, Decimal("0.00"))
+            self.assertEqual(fill.transfer_fee, Decimal("0.01"))
+            self.assertEqual(fill.total_fee, Decimal("5.01"))
+            self.assertEqual(fill.net_amount, Decimal("1005.01"))
+
+    def test_sell_fee_includes_stamp_duty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(tmpdir, _fee_rows())
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+
+            fill = executor.execute_one(
+                _intent("000001", date(2026, 6, 29), side="sell", quantity=1000)
+            )
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.gross_amount, Decimal("10000.00"))
+            self.assertEqual(fill.commission, Decimal("5.00"))
+            self.assertEqual(fill.transfer_fee, Decimal("0.10"))
+            self.assertEqual(fill.stamp_duty, Decimal("5.00"))
+            self.assertEqual(fill.total_fee, Decimal("10.10"))
+            self.assertEqual(fill.net_amount, Decimal("9989.90"))
+
+    def test_minimum_commission_is_five_yuan_for_small_fill(self) -> None:
+        fee = FeeSchedule().calculate(
+            side="buy",
+            execution_ts=date(2026, 6, 30),
+            execution_price=10.0,
+            filled_quantity=100,
+        )
+
+        self.assertEqual(fee.gross_amount, Decimal("1000.00"))
+        self.assertEqual(fee.commission, Decimal("5.00"))
+
+    def test_large_fill_commission_uses_rate_when_above_minimum(self) -> None:
+        fee = FeeSchedule().calculate(
+            side="buy",
+            execution_ts=date(2026, 6, 30),
+            execution_price=100.0,
+            filled_quantity=100000,
+        )
+
+        self.assertEqual(fee.gross_amount, Decimal("10000000.00"))
+        self.assertEqual(fee.commission, Decimal("2500.00"))
+        self.assertEqual(fee.transfer_fee, Decimal("100.00"))
+        self.assertEqual(fee.total_fee, Decimal("2600.00"))
+
+    def test_fee_decimal_rounding_to_cent_without_float_drift(self) -> None:
+        fee = FeeSchedule().calculate(
+            side="sell",
+            execution_ts=date(2026, 6, 30),
+            execution_price=3333.33,
+            filled_quantity=100,
+        )
+
+        self.assertEqual(fee.gross_amount, Decimal("333333.00"))
+        self.assertEqual(fee.commission, Decimal("83.33"))
+        self.assertEqual(fee.transfer_fee, Decimal("3.33"))
+        self.assertEqual(fee.stamp_duty, Decimal("166.67"))
+        self.assertEqual(fee.total_fee, Decimal("253.33"))
+        self.assertEqual(fee.net_amount, Decimal("333079.67"))
+
+    def test_fee_schedule_resolves_rates_by_effective_date(self) -> None:
+        schedule = FeeSchedule()
+
+        before_stamp = schedule.resolve(date(2023, 8, 27))
+        before_transfer_cut = schedule.resolve(date(2025, 4, 28))
+        after_transfer_cut = schedule.resolve(date(2025, 4, 29))
+
+        self.assertEqual(before_stamp.stamp_duty_rate, Decimal("0"))
+        self.assertEqual(before_transfer_cut.stamp_duty_rate, Decimal("0.0005"))
+        self.assertEqual(before_transfer_cut.transfer_fee_rate, Decimal("0.00002"))
+        self.assertEqual(after_transfer_cut.transfer_fee_rate, Decimal("0.00001"))
+
     def test_t1_suspended_order_is_explicitly_suspended_without_fill(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             portal = _portal(
@@ -252,11 +338,16 @@ def _portal(
     return PITDataPortal({"daily_bar_raw": daily_path, "security_master": security_master_path})
 
 
-def _intent(security_id: str, decision_date: date, side: str = "buy") -> OrderIntent:
+def _intent(
+    security_id: str,
+    decision_date: date,
+    side: str = "buy",
+    quantity: int = 100,
+) -> OrderIntent:
     return OrderIntent(
         security_id=security_id,
         side=side,
-        quantity=100,
+        quantity=quantity,
         decision_date=decision_date,
         reason="test_intent",
     )
@@ -266,6 +357,13 @@ def _price_rows() -> list[dict[str, object]]:
     return [
         _bar_row("000001", "2026-06-29", open_price=50.0, high=120.0, low=40.0, close=99.0),
         _bar_row("000001", "2026-06-30", open_price=10.0, high=20.0, low=5.0, close=15.0),
+    ]
+
+
+def _fee_rows() -> list[dict[str, object]]:
+    return [
+        _bar_row("000001", "2026-06-29", open_price=10.0, high=10.0, low=10.0, close=10.0),
+        _bar_row("000001", "2026-06-30", open_price=10.0, high=10.0, low=10.0, close=10.0),
     ]
 
 

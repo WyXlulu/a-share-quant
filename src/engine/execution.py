@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
@@ -18,6 +18,7 @@ ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 DAILY_BAR_ASOF_TIME = time(15, 0, 0)
 PRICE_TICK = Decimal("0.01")
 PRICE_TOLERANCE = 1e-9
+MONEY_QUANT = Decimal("0.01")
 BOARD_LIMIT_RATES = {
     "主板": Decimal("0.10"),
     "创业板": Decimal("0.20"),
@@ -37,6 +38,94 @@ class FillLedgerEntry:
     filled_quantity: int
     status: FillStatus
     reason: str
+    gross_amount: Decimal = Decimal("0.00")
+    commission: Decimal = Decimal("0.00")
+    stamp_duty: Decimal = Decimal("0.00")
+    transfer_fee: Decimal = Decimal("0.00")
+    total_fee: Decimal = Decimal("0.00")
+    net_amount: Decimal = Decimal("0.00")
+
+
+@dataclass(frozen=True)
+class EffectiveRate:
+    effective_date: date
+    rate: Decimal
+
+
+@dataclass(frozen=True)
+class ResolvedFeeRates:
+    commission_rate: Decimal
+    commission_minimum: Decimal
+    stamp_duty_rate: Decimal
+    transfer_fee_rate: Decimal
+
+
+@dataclass(frozen=True)
+class FeeBreakdown:
+    gross_amount: Decimal
+    commission: Decimal
+    stamp_duty: Decimal
+    transfer_fee: Decimal
+    total_fee: Decimal
+    net_amount: Decimal
+
+
+@dataclass(frozen=True)
+class FeeSchedule:
+    # Broker commission is configurable; default is a common retail tier, not an exchange rule.
+    commission_rate: Decimal = Decimal("0.00025")
+    commission_minimum: Decimal = Decimal("5.00")
+    # Stamp duty: 0.05% on sells only, effective 2023-08-28.
+    stamp_duty_rates: tuple[EffectiveRate, ...] = (
+        EffectiveRate(date(2023, 8, 28), Decimal("0.0005")),
+    )
+    # Transfer fee: 0.002% before 2025-04-29, 0.001% from 2025-04-29.
+    transfer_fee_rates: tuple[EffectiveRate, ...] = (
+        EffectiveRate(date(1900, 1, 1), Decimal("0.00002")),
+        EffectiveRate(date(2025, 4, 29), Decimal("0.00001")),
+    )
+
+    def resolve(self, execution_ts: date | datetime | pd.Timestamp) -> ResolvedFeeRates:
+        execution_date = _as_date(execution_ts)
+        return ResolvedFeeRates(
+            commission_rate=self.commission_rate,
+            commission_minimum=_money(self.commission_minimum),
+            stamp_duty_rate=_resolve_rate(self.stamp_duty_rates, execution_date),
+            transfer_fee_rate=_resolve_rate(self.transfer_fee_rates, execution_date),
+        )
+
+    def calculate(
+        self,
+        side: str,
+        execution_ts: date | datetime | pd.Timestamp,
+        execution_price: float,
+        filled_quantity: int,
+    ) -> FeeBreakdown:
+        rates = self.resolve(execution_ts)
+        gross_amount = _money(Decimal(str(execution_price)) * Decimal(filled_quantity))
+        commission = _money(
+            max(gross_amount * rates.commission_rate, rates.commission_minimum)
+        )
+        transfer_fee = _money(gross_amount * rates.transfer_fee_rate)
+        stamp_duty = (
+            _money(gross_amount * rates.stamp_duty_rate)
+            if side == "sell"
+            else Decimal("0.00")
+        )
+        total_fee = _money(commission + transfer_fee + stamp_duty)
+        net_amount = (
+            _money(gross_amount - total_fee)
+            if side == "sell"
+            else _money(gross_amount + total_fee)
+        )
+        return FeeBreakdown(
+            gross_amount=gross_amount,
+            commission=commission,
+            stamp_duty=stamp_duty,
+            transfer_fee=transfer_fee,
+            total_fee=total_fee,
+            net_amount=net_amount,
+        )
 
 
 @dataclass(frozen=True)
@@ -44,6 +133,7 @@ class T1OpenExecutor:
     calendar: TradingCalendar
     portal: PITDataPortal
     end_date: date
+    fee_schedule: FeeSchedule = field(default_factory=FeeSchedule)
 
     def execute(self, order_intents: list[OrderIntent]) -> list[FillLedgerEntry]:
         return [self.execute_one(order_intent) for order_intent in order_intents]
@@ -65,6 +155,12 @@ class T1OpenExecutor:
         if rejection_reason is not None:
             return _rejected(order_intent, next_session, execution_bar.open_price, rejection_reason)
 
+        fees = self.fee_schedule.calculate(
+            order_intent.side,
+            next_session,
+            execution_bar.open_price,
+            order_intent.quantity,
+        )
         return FillLedgerEntry(
             order_intent=order_intent,
             intent_date=order_intent.decision_date,
@@ -73,6 +169,12 @@ class T1OpenExecutor:
             filled_quantity=order_intent.quantity,
             status="FILLED",
             reason="T1_OPEN_FILLED",
+            gross_amount=fees.gross_amount,
+            commission=fees.commission,
+            stamp_duty=fees.stamp_duty,
+            transfer_fee=fees.transfer_fee,
+            total_fee=fees.total_fee,
+            net_amount=fees.net_amount,
         )
 
     def _next_session(self, decision_date: date) -> date | None:
@@ -190,6 +292,25 @@ class T1OpenExecutor:
 
 def _daily_bar_asof(trade_date: date) -> pd.Timestamp:
     return pd.Timestamp(datetime.combine(trade_date, DAILY_BAR_ASOF_TIME, tzinfo=ASIA_SHANGHAI))
+
+
+def _as_date(value: date | datetime | pd.Timestamp) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return pd.Timestamp(value).date()
+
+
+def _resolve_rate(rates: tuple[EffectiveRate, ...], execution_date: date) -> Decimal:
+    active_rates = [rate for rate in rates if rate.effective_date <= execution_date]
+    if not active_rates:
+        return Decimal("0")
+    return sorted(active_rates, key=lambda rate: rate.effective_date)[-1].rate
+
+
+def _money(value: Decimal) -> Decimal:
+    return value.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
 
 
 def _unfilled(
