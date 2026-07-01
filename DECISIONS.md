@@ -99,3 +99,11 @@
 - **决定**：PITDataPortal 是上层访问 PIT 数据的唯一只读入口；对缺少 `available_at` 的表一律 fail-closed，并按字段级 `available_at` 做 as-of 过滤：稳定属性按上市日可见，`CURRENT_SNAPSHOT_ONLY` 字段按快照拉取日可见。
 - **理由**：Portal 是整个防泄露架构的物理闸门，保证任何 `available_at > asof_ts` 的数据不会流向特征、策略或执行层；字段级可见性让 security master 这类宽表既保留稳定属性，又阻断当前快照字段穿越历史。
 - **备选**：上层直接读取 parquet 或把缺时间戳字段默认视为可见（会绕过防泄露闸门，放弃）。
+
+---
+
+## 2026-07-01 | ST 5% 涨跌幅限幅暂缓实现
+
+- **决定**：涨跌停开盘拒单暂只按 `security_master.board` 的板块限幅处理（主板 10% / 创业板与科创板 20% / 北交所 30%），暂不实现 ST 股 5% 限幅。
+- **理由**：当前 `security_master.is_st` 是 `CURRENT_SNAPSHOT_ONLY` 污染字段，不可用于历史时点判定；沪深300当前 ST = 0，历史个别 ST 段会被按板块宽松限幅处理，属于已知有界小偏差。待接入具备时点能力的 ST 数据（如 Tushare）后，再补上 ST 5% 限幅。
+- **备选**：直接用当前快照 `is_st` 判断历史 ST（未来函数风险，放弃）；在没有 PIT ST 数据前硬编码 ST 区间（不可审计，放弃）。
