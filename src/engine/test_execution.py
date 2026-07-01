@@ -9,10 +9,83 @@ import pandas as pd
 
 from src.calendar import trading_calendar_from_dates
 from src.data import PITDataPortal
+from src.domain import TradeStatus
 from src.engine import FillLedgerEntry, OrderIntent, T1OpenExecutor
 
 
 class T1OpenExecutorTest(unittest.TestCase):
+    def test_t1_suspended_order_is_explicitly_suspended_without_fill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("000001", "2026-06-29", open_price=10.0, high=10.5, low=9.5, close=10.0),
+                    _bar_row(
+                        "000001",
+                        "2026-06-30",
+                        open_price=None,
+                        high=None,
+                        low=None,
+                        close=None,
+                        trade_status=TradeStatus.SUSPENDED.value,
+                    ),
+                ],
+            )
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+
+            fill = executor.execute_one(_intent("000001", date(2026, 6, 29), side="buy"))
+
+            self.assertEqual(fill.status, "SUSPENDED")
+            self.assertEqual(fill.reason, "NO_TRADE_SUSPENDED")
+            self.assertEqual(fill.execution_date, date(2026, 6, 30))
+            self.assertIsNone(fill.execution_price)
+            self.assertEqual(fill.filled_quantity, 0)
+
+    def test_suspended_and_missing_open_have_distinct_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("000001", "2026-06-29", open_price=10.0, high=10.5, low=9.5, close=10.0),
+                    _bar_row("000002", "2026-06-29", open_price=10.0, high=10.5, low=9.5, close=10.0),
+                    _bar_row(
+                        "000001",
+                        "2026-06-30",
+                        open_price=None,
+                        high=None,
+                        low=None,
+                        close=None,
+                        trade_status=TradeStatus.SUSPENDED.value,
+                    ),
+                    _bar_row(
+                        "000002",
+                        "2026-06-30",
+                        open_price=None,
+                        high=10.5,
+                        low=9.5,
+                        close=10.0,
+                        trade_status=TradeStatus.NORMAL.value,
+                    ),
+                ],
+                security_master_rows=[
+                    _security_master_row("000001", board="主板", list_date="2020-01-01"),
+                    _security_master_row("000002", board="主板", list_date="2020-01-01"),
+                ],
+            )
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+
+            suspended_fill, missing_fill = executor.execute(
+                [
+                    _intent("000001", date(2026, 6, 29), side="buy"),
+                    _intent("000002", date(2026, 6, 29), side="buy"),
+                ]
+            )
+
+            self.assertEqual(suspended_fill.status, "SUSPENDED")
+            self.assertEqual(suspended_fill.reason, "NO_TRADE_SUSPENDED")
+            self.assertEqual(missing_fill.status, "UNFILLED")
+            self.assertEqual(missing_fill.reason, "NO_OPEN_PRICE")
+
     def test_main_board_limit_up_rejects_buy_without_fill(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             portal = _portal(
@@ -206,10 +279,11 @@ def _missing_t1_with_later_price_rows() -> list[dict[str, object]]:
 def _bar_row(
     security_id: str,
     trade_date: str,
-    open_price: float,
-    high: float,
-    low: float,
-    close: float,
+    open_price: float | None,
+    high: float | None,
+    low: float | None,
+    close: float | None,
+    trade_status: str = TradeStatus.NORMAL.value,
 ) -> dict[str, object]:
     return {
         "security_id": security_id,
@@ -219,6 +293,7 @@ def _bar_row(
         "low": low,
         "close": close,
         "volume": 999999,
+        "trade_status": trade_status,
         "event_ts": f"{trade_date}T15:00:00+08:00",
         "available_at": f"{trade_date}T15:00:00+08:00",
         "snapshot_id": "fixture",

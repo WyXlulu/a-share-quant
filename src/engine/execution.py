@@ -10,6 +10,7 @@ import pandas as pd
 
 from src.calendar import TradingCalendar
 from src.data import PITDataPortal
+from src.domain import TradeStatus
 from src.engine.dummy_strategy import OrderIntent
 
 
@@ -24,7 +25,7 @@ BOARD_LIMIT_RATES = {
     "北交所": Decimal("0.30"),
 }
 
-FillStatus = Literal["FILLED", "UNFILLED", "REJECTED"]
+FillStatus = Literal["FILLED", "UNFILLED", "REJECTED", "SUSPENDED"]
 
 
 @dataclass(frozen=True)
@@ -52,19 +53,23 @@ class T1OpenExecutor:
         if next_session is None:
             return _unfilled(order_intent, None, "NO_NEXT_SESSION")
 
-        open_price = self._open_price(order_intent.security_id, next_session)
-        if open_price is None:
+        execution_bar = self._execution_bar(order_intent.security_id, next_session)
+        if execution_bar is None:
+            return _unfilled(order_intent, next_session, "NO_OPEN_PRICE")
+        if execution_bar.trade_status == TradeStatus.SUSPENDED.value:
+            return _suspended(order_intent, next_session)
+        if execution_bar.open_price is None:
             return _unfilled(order_intent, next_session, "NO_OPEN_PRICE")
 
-        rejection_reason = self._limit_rejection_reason(order_intent, next_session, open_price)
+        rejection_reason = self._limit_rejection_reason(order_intent, next_session, execution_bar.open_price)
         if rejection_reason is not None:
-            return _rejected(order_intent, next_session, open_price, rejection_reason)
+            return _rejected(order_intent, next_session, execution_bar.open_price, rejection_reason)
 
         return FillLedgerEntry(
             order_intent=order_intent,
             intent_date=order_intent.decision_date,
             execution_date=next_session,
-            execution_price=open_price,
+            execution_price=execution_bar.open_price,
             filled_quantity=order_intent.quantity,
             status="FILLED",
             reason="T1_OPEN_FILLED",
@@ -79,12 +84,12 @@ class T1OpenExecutor:
             return None
         return next_session
 
-    def _open_price(self, security_id: str, execution_date: date) -> float | None:
+    def _execution_bar(self, security_id: str, execution_date: date) -> "_ExecutionBar | None":
         rows = self.portal.query(
             "daily_bar_raw",
             _daily_bar_asof(execution_date),
             security_ids=[security_id],
-            columns=["security_id", "trade_date", "open"],
+            columns=["security_id", "trade_date", "open", "trade_status"],
         )
         if rows.empty:
             return None
@@ -95,9 +100,11 @@ class T1OpenExecutor:
             return None
 
         open_value = execution_rows.sort_values("security_id").iloc[0]["open"]
-        if pd.isna(open_value):
-            return None
-        return float(open_value)
+        trade_status = str(execution_rows.sort_values("security_id").iloc[0]["trade_status"])
+        # A present T+1 row with trade_status=停牌 is a market-rule no-trade case, even when
+        # open is missing. A present non-suspended row with open missing is data absence.
+        open_price = None if pd.isna(open_value) else float(open_value)
+        return _ExecutionBar(open_price=open_price, trade_status=trade_status)
 
     def _limit_rejection_reason(
         self,
@@ -216,6 +223,27 @@ def _rejected(
         status="REJECTED",
         reason=reason,
     )
+
+
+def _suspended(
+    order_intent: OrderIntent,
+    execution_date: date,
+) -> FillLedgerEntry:
+    return FillLedgerEntry(
+        order_intent=order_intent,
+        intent_date=order_intent.decision_date,
+        execution_date=execution_date,
+        execution_price=None,
+        filled_quantity=0,
+        status="SUSPENDED",
+        reason="NO_TRADE_SUSPENDED",
+    )
+
+
+@dataclass(frozen=True)
+class _ExecutionBar:
+    open_price: float | None
+    trade_status: str
 
 
 @dataclass(frozen=True)
