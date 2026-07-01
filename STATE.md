@@ -26,6 +26,7 @@
 - [x] Phase 0 整体完成：四件套齐备（未复权 L1 面板、security master、交易日历、PITDataPortal as-of 闸门），全部验收通过、可复现
 - [x] 事件驱动时钟骨架：按真实交易日历逐日推进；回调侧只能用固定 `asof_ts` 的 ctx.portal，不能自行传 `asof_ts`；双道防未来验证完成（Portal `available_at` 过滤 + `daily_bar_raw.trade_date <= T` 兜底）；22 个单元测试通过
 - [x] 哑策略 + `OrderIntent`：固定确定性、可复现、非收益型订单发生器完成；可交易池只用当日可见字段（`daily_bar_raw.trade_date == T` 与 `trade_status == 正常`），未使用污染字段 `security_master.is_st`；选股防未来验证通过；26 个单元测试通过
+- [x] 执行引擎：T+1 开盘成交 + 账本骨架完成；T 日决策、T+1 开盘成交；成交只取 T+1 `open`，不取次日 high/low/close/volume 等全天数据；无 T+1 或无开盘价不顺延偷价，分别分类为 `NO_NEXT_SESSION` / `NO_OPEN_PRICE`；30 个单元测试通过
 
 ---
 
@@ -38,7 +39,7 @@
 
 ## 下一步（按顺序）
 
-1. 执行引擎 + 账本：T+1、开盘保守成交、涨跌停拒单、停牌、费用、lot size
+1. 执行引擎续：涨跌停开盘拒单（按板块限幅，开盘触涨停拒买 / 触跌停拒卖）
 
 ---
 
