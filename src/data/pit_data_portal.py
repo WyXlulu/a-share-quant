@@ -13,10 +13,11 @@ from src.domain import DataContractError
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 REQUIRED_VISIBILITY_COLUMN = "available_at"
-SUPPORTED_TABLES = frozenset({"daily_bar_raw", "security_master"})
+SUPPORTED_TABLES = frozenset({"daily_bar_raw", "security_master", "corporate_actions"})
 DEFAULT_TABLE_PATHS = {
     "daily_bar_raw": Path("data/l1_raw/daily_bar_raw.parquet"),
     "security_master": Path("data/l1_raw/security_master.parquet"),
+    "corporate_actions": Path("data/l2_corporate_actions/corporate_actions.parquet"),
 }
 SECURITY_MASTER_TAINT_FIELDS = ("is_st", "status")
 SECURITY_MASTER_COMPANION_SUFFIXES = ("available_at", "point_in_time_capability", "evidence_level")

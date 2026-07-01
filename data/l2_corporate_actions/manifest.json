@@ -1,0 +1,112 @@
+{
+  "manifest_version": 1,
+  "created_at": "2026-07-01T07:53:16+00:00",
+  "snapshot_id": "20260630_corporate_actions_akshare",
+  "output_path": "data/l2_corporate_actions/corporate_actions.parquet",
+  "start_date": "2015-06-30",
+  "end_date": "2026-06-30",
+  "rows": 3075,
+  "security_count_requested": 300,
+  "security_count_with_actions": 295,
+  "security_count_no_actions_observed": 5,
+  "security_count_failed": 0,
+  "universe": {
+    "index_symbol": "000300",
+    "source": "data/l1_raw/daily_bar_raw.parquet",
+    "source_id": "data.l1_raw.daily_bar_raw.security_id",
+    "source_errors": []
+  },
+  "source_capability": {
+    "source_id": "akshare.corporate_actions_adapter",
+    "provider_fallback_order": [
+      "akshare.stock_fhps_detail_em",
+      "akshare.stock_dividend_cninfo",
+      "akshare.stock_fhps_detail_ths",
+      "akshare.stock_history_dividend_detail.dividend"
+    ],
+    "rights_issue_provider": "akshare.stock_history_dividend_detail.rights",
+    "source_ids_observed": [
+      "akshare.stock_dividend_cninfo",
+      "akshare.stock_fhps_detail_em",
+      "akshare.stock_history_dividend_detail.rights"
+    ]
+  },
+  "evidence_level": "EXPLORATORY_TAINTED",
+  "point_in_time_capability": {
+    "level": "EX_DATE_CLOSE_BEST_EFFORT",
+    "available_at_semantics": "available_at is set to the ex_date close, 15:00 Asia/Shanghai. The ex-date is a public event date, but exact disclosure and tradability availability timestamps are not fully verified provider-by-provider."
+  },
+  "best_effort_warning": "This is a best-effort corporate action ledger. Completeness and accuracy have not been manually verified event by event.",
+  "coverage_gaps": {
+    "SPLIT": "Not separately identified by the selected dividend/rights interfaces.",
+    "MERGER": "Not covered by the selected dividend/rights interfaces.",
+    "DELIST": "Not covered by the selected dividend/rights interfaces.",
+    "RIGHTS_ISSUE": "Best effort via Sina rights provider only; provider failures are listed."
+  },
+  "coverage_gap_symbols": {},
+  "action_type_distribution": {
+    "CASH_DIVIDEND": 2756,
+    "RIGHTS_ISSUE": 19,
+    "STOCK_DIVIDEND": 300
+  },
+  "source_distribution": {
+    "akshare.stock_dividend_cninfo": 1,
+    "akshare.stock_fhps_detail_em": 3055,
+    "akshare.stock_history_dividend_detail.rights": 19
+  },
+  "failures": [],
+  "source_errors": {
+    "001280": [
+      "akshare.stock_fhps_detail_em: no dividend rows in requested date range",
+      "akshare.stock_dividend_cninfo: no dividend rows in requested date range",
+      "akshare.stock_fhps_detail_ths: no dividend rows in requested date range",
+      "akshare.stock_history_dividend_detail.dividend: no dividend rows in requested date range"
+    ],
+    "600930": [
+      "akshare.stock_fhps_detail_em: no dividend rows in requested date range"
+    ],
+    "688047": [
+      "akshare.stock_fhps_detail_em: TypeError: 'NoneType' object is not subscriptable",
+      "akshare.stock_dividend_cninfo: KeyError: '实施方案公告日期'",
+      "akshare.stock_fhps_detail_ths: no dividend rows in requested date range",
+      "akshare.stock_history_dividend_detail.dividend: no dividend rows in requested date range"
+    ],
+    "688506": [
+      "akshare.stock_fhps_detail_em: TypeError: 'NoneType' object is not subscriptable",
+      "akshare.stock_dividend_cninfo: KeyError: '实施方案公告日期'",
+      "akshare.stock_fhps_detail_ths: no dividend rows in requested date range",
+      "akshare.stock_history_dividend_detail.dividend: no dividend rows in requested date range"
+    ],
+    "688521": [
+      "akshare.stock_fhps_detail_em: TypeError: 'NoneType' object is not subscriptable",
+      "akshare.stock_dividend_cninfo: KeyError: '实施方案公告日期'",
+      "akshare.stock_fhps_detail_ths: no dividend rows in requested date range",
+      "akshare.stock_history_dividend_detail.dividend: no dividend rows in requested date range"
+    ],
+    "688981": [
+      "akshare.stock_fhps_detail_em: TypeError: 'NoneType' object is not subscriptable",
+      "akshare.stock_dividend_cninfo: KeyError: '实施方案公告日期'",
+      "akshare.stock_fhps_detail_ths: no dividend rows in requested date range",
+      "akshare.stock_history_dividend_detail.dividend: no dividend rows in requested date range"
+    ]
+  },
+  "no_action_symbols": [
+    "001280",
+    "688047",
+    "688506",
+    "688521",
+    "688981"
+  ],
+  "required_columns": [
+    "security_id",
+    "ex_date",
+    "action_type",
+    "cash_dividend_per_share",
+    "share_ratio",
+    "event_ts",
+    "available_at",
+    "source_id",
+    "snapshot_id"
+  ],
+  "revision_id": "akshare-1.18.64"
+}

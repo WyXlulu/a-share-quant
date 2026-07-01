@@ -41,6 +41,14 @@ class DailyBarsResult:
 
 
 @dataclass(frozen=True)
+class CorporateActionsResult:
+    frame: pd.DataFrame
+    source_id: str
+    errors: list[str]
+    coverage_gaps: list[str]
+
+
+@dataclass(frozen=True)
 class AdapterFrameResult:
     frame: pd.DataFrame
     source_id: str
@@ -204,6 +212,300 @@ def fetch_stock_daily_raw(symbol: str, start: date, end: date) -> DailyBarsResul
             errors.append(f"{sina_source_id}: {type(exc).__name__}: {exc}")
 
     return DailyBarsResult(frame=None, failure_reason=" | ".join(errors))
+
+
+def fetch_stock_corporate_actions(symbol: str, start: date, end: date) -> CorporateActionsResult:
+    errors: list[str] = []
+    coverage_gaps: list[str] = []
+    frames: list[pd.DataFrame] = []
+    observed_sources: list[str] = []
+    provider_observed = False
+
+    dividend_sources = [
+        (
+            "akshare.stock_fhps_detail_em",
+            lambda: ak.stock_fhps_detail_em(symbol=symbol),
+            _normalize_em_corporate_actions,
+        ),
+        (
+            "akshare.stock_dividend_cninfo",
+            lambda: ak.stock_dividend_cninfo(symbol=symbol),
+            _normalize_cninfo_corporate_actions,
+        ),
+        (
+            "akshare.stock_fhps_detail_ths",
+            lambda: ak.stock_fhps_detail_ths(symbol=symbol),
+            _normalize_ths_corporate_actions,
+        ),
+        (
+            "akshare.stock_history_dividend_detail.dividend",
+            lambda: ak.stock_history_dividend_detail(symbol=symbol, indicator="分红"),
+            _normalize_sina_dividend_corporate_actions,
+        ),
+    ]
+
+    with direct_data_requests():
+        dividend_frame = None
+        for source_id, loader, normalizer in dividend_sources:
+            try:
+                source_frame = loader()
+                normalized = normalizer(symbol, source_frame, source_id)
+                provider_observed = True
+                normalized = _filter_corporate_actions_by_date(normalized, start, end)
+                if normalized.empty:
+                    errors.append(f"{source_id}: no dividend rows in requested date range")
+                    continue
+                dividend_frame = normalized
+                observed_sources.append(source_id)
+                break
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{source_id}: {type(exc).__name__}: {exc}")
+
+        if dividend_frame is not None:
+            frames.append(dividend_frame)
+
+        rights_source_id = "akshare.stock_history_dividend_detail.rights"
+        try:
+            rights_raw = ak.stock_history_dividend_detail(symbol=symbol, indicator="配股")
+            rights_frame = _normalize_sina_rights_corporate_actions(symbol, rights_raw, rights_source_id)
+            provider_observed = True
+            rights_frame = _filter_corporate_actions_by_date(rights_frame, start, end)
+            if not rights_frame.empty:
+                frames.append(rights_frame)
+                observed_sources.append(rights_source_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{rights_source_id}: {type(exc).__name__}: {exc}")
+            coverage_gaps.append("RIGHTS_ISSUE: Sina rights provider failed for this symbol")
+
+    if frames:
+        combined = pd.concat(frames, ignore_index=True)
+        combined = combined.drop_duplicates(
+            subset=[
+                "security_id",
+                "ex_date",
+                "action_type",
+                "cash_dividend_per_share",
+                "share_ratio",
+            ],
+            keep="last",
+        ).sort_values(["security_id", "ex_date", "action_type"])
+    else:
+        combined = _empty_corporate_actions_frame()
+
+    return CorporateActionsResult(
+        frame=combined.reset_index(drop=True),
+        source_id=";".join(dict.fromkeys(observed_sources))
+        if observed_sources
+        else ("NO_ACTIONS_OBSERVED" if provider_observed else "UNAVAILABLE"),
+        errors=errors,
+        coverage_gaps=list(dict.fromkeys(coverage_gaps)),
+    )
+
+
+def _empty_corporate_actions_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "security_id",
+            "ex_date",
+            "action_type",
+            "cash_dividend_per_share",
+            "share_ratio",
+            "record_date",
+            "announcement_date",
+            "action_description",
+            "source_id",
+        ]
+    )
+
+
+def _filter_corporate_actions_by_date(frame: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    ex_dates = pd.to_datetime(frame["ex_date"], errors="coerce").dt.date
+    return frame.loc[ex_dates.between(start, end)].copy()
+
+
+def _normalize_em_corporate_actions(
+    symbol: str, frame: pd.DataFrame, source_id: str
+) -> pd.DataFrame:
+    if frame.empty:
+        return _empty_corporate_actions_frame()
+
+    cash_per_10 = _numeric_column(frame, "现金分红-现金分红比例")
+    share_per_10 = _numeric_column(frame, "送转股份-送股比例").fillna(0) + _numeric_column(
+        frame, "送转股份-转股比例"
+    ).fillna(0)
+    if share_per_10.isna().all():
+        share_per_10 = _numeric_column(frame, "送转股份-送转总比例")
+    return _build_normalized_corporate_actions(
+        symbol=symbol,
+        ex_date=frame["除权除息日"],
+        cash_per_10=cash_per_10,
+        share_per_10=share_per_10,
+        source_id=source_id,
+        record_date=frame.get("股权登记日"),
+        announcement_date=frame.get("最新公告日期"),
+        description=frame.get("现金分红-现金分红比例描述"),
+    )
+
+
+def _normalize_cninfo_corporate_actions(
+    symbol: str, frame: pd.DataFrame, source_id: str
+) -> pd.DataFrame:
+    if frame.empty:
+        return _empty_corporate_actions_frame()
+
+    share_per_10 = _numeric_column(frame, "送股比例").fillna(0) + _numeric_column(
+        frame, "转增比例"
+    ).fillna(0)
+    return _build_normalized_corporate_actions(
+        symbol=symbol,
+        ex_date=frame["除权日"],
+        cash_per_10=_numeric_column(frame, "派息比例"),
+        share_per_10=share_per_10,
+        source_id=source_id,
+        record_date=frame.get("股权登记日"),
+        announcement_date=frame.get("实施方案公告日期"),
+        description=frame.get("实施方案分红说明"),
+    )
+
+
+def _normalize_ths_corporate_actions(
+    symbol: str, frame: pd.DataFrame, source_id: str
+) -> pd.DataFrame:
+    if frame.empty:
+        return _empty_corporate_actions_frame()
+
+    description = frame.get("分红方案说明", pd.Series([""] * len(frame), index=frame.index))
+    sent_per_10 = description.astype(str).str.extract(r"送\s*([0-9.]+)", expand=False)
+    transfer_per_10 = description.astype(str).str.extract(r"转(?:增)?\s*([0-9.]+)", expand=False)
+    cash_per_10 = description.astype(str).str.extract(r"派\s*([0-9.]+)\s*元", expand=False)
+    return _build_normalized_corporate_actions(
+        symbol=symbol,
+        ex_date=frame["A股除权除息日"],
+        cash_per_10=pd.to_numeric(cash_per_10, errors="coerce"),
+        share_per_10=(
+            pd.to_numeric(sent_per_10, errors="coerce").fillna(0)
+            + pd.to_numeric(transfer_per_10, errors="coerce").fillna(0)
+        ),
+        source_id=source_id,
+        record_date=frame.get("A股股权登记日"),
+        announcement_date=frame.get("实施公告日"),
+        description=description,
+    )
+
+
+def _normalize_sina_dividend_corporate_actions(
+    symbol: str, frame: pd.DataFrame, source_id: str
+) -> pd.DataFrame:
+    if frame.empty:
+        return _empty_corporate_actions_frame()
+
+    return _build_normalized_corporate_actions(
+        symbol=symbol,
+        ex_date=frame["除权除息日"],
+        cash_per_10=_numeric_column(frame, "派息"),
+        share_per_10=_numeric_column(frame, "送股").fillna(0) + _numeric_column(
+            frame, "转增"
+        ).fillna(0),
+        source_id=source_id,
+        record_date=frame.get("股权登记日"),
+        announcement_date=frame.get("公告日期"),
+        description=frame.get("进度"),
+    )
+
+
+def _normalize_sina_rights_corporate_actions(
+    symbol: str, frame: pd.DataFrame, source_id: str
+) -> pd.DataFrame:
+    if frame.empty:
+        return _empty_corporate_actions_frame()
+
+    normalized = _build_normalized_corporate_actions(
+        symbol=symbol,
+        ex_date=frame["除权日"],
+        cash_per_10=pd.Series([0.0] * len(frame), index=frame.index),
+        share_per_10=_numeric_column(frame, "配股方案"),
+        source_id=source_id,
+        record_date=frame.get("股权登记日"),
+        announcement_date=frame.get("公告日期"),
+        description=None,
+        forced_action_type="RIGHTS_ISSUE",
+    )
+    if "配股价格" in frame.columns:
+        normalized["rights_price_per_share"] = pd.to_numeric(frame["配股价格"], errors="coerce")
+    return normalized
+
+
+def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series([pd.NA] * len(frame), index=frame.index, dtype="Float64")
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def _build_normalized_corporate_actions(
+    *,
+    symbol: str,
+    ex_date: pd.Series,
+    cash_per_10: pd.Series,
+    share_per_10: pd.Series,
+    source_id: str,
+    record_date: pd.Series | None,
+    announcement_date: pd.Series | None,
+    description: pd.Series | None,
+    forced_action_type: str | None = None,
+) -> pd.DataFrame:
+    normalized = pd.DataFrame(
+        {
+            "security_id": str(symbol).zfill(6),
+            "ex_date": pd.to_datetime(ex_date, errors="coerce").dt.date,
+            "cash_dividend_per_share": (pd.to_numeric(cash_per_10, errors="coerce") / 10).fillna(0),
+            "share_ratio": (pd.to_numeric(share_per_10, errors="coerce") / 10).fillna(0),
+            "source_id": source_id,
+        }
+    )
+    normalized["record_date"] = (
+        pd.to_datetime(record_date, errors="coerce").dt.date if record_date is not None else pd.NaT
+    )
+    normalized["announcement_date"] = (
+        pd.to_datetime(announcement_date, errors="coerce").dt.date
+        if announcement_date is not None
+        else pd.NaT
+    )
+    normalized["action_description"] = (
+        description.astype(str) if description is not None else pd.Series([""] * len(normalized))
+    )
+    normalized["action_type"] = normalized.apply(
+        lambda row: forced_action_type
+        or _classify_corporate_action(row["cash_dividend_per_share"], row["share_ratio"]),
+        axis=1,
+    )
+    normalized = normalized.dropna(subset=["ex_date"])
+    has_effect = normalized["cash_dividend_per_share"].gt(0) | normalized["share_ratio"].gt(0)
+    normalized = normalized.loc[has_effect | normalized["action_type"].eq("RIGHTS_ISSUE")].copy()
+    return normalized[
+        [
+            "security_id",
+            "ex_date",
+            "action_type",
+            "cash_dividend_per_share",
+            "share_ratio",
+            "record_date",
+            "announcement_date",
+            "action_description",
+            "source_id",
+        ]
+    ]
+
+
+def _classify_corporate_action(cash_dividend_per_share: object, share_ratio: object) -> str:
+    cash = float(cash_dividend_per_share or 0)
+    shares = float(share_ratio or 0)
+    if shares > 0:
+        return "STOCK_DIVIDEND"
+    if cash > 0:
+        return "CASH_DIVIDEND"
+    return "OTHER"
 
 
 def normalize_vendor_daily_frame(symbol: str | None, frame: pd.DataFrame) -> pd.DataFrame:

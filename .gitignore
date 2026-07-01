@@ -219,4 +219,5 @@ __marimo__/
 
 # Project data artifacts
 data/l1_raw/*.parquet
+data/l2_corporate_actions/*.parquet
 data/quarantine/**/*.parquet
