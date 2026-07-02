@@ -26,6 +26,10 @@ class InsufficientLockedQuantityError(PortfolioLedgerError):
     """Raised when a lock release exceeds currently locked inventory."""
 
 
+class OddLotSellError(PortfolioLedgerError):
+    """Raised when a sell lock violates A-share odd-lot liquidation rules."""
+
+
 @dataclass
 class CashState:
     settled_cash: Decimal = Decimal("0.00")
@@ -100,6 +104,20 @@ class PositionState:
 
 
 @dataclass(frozen=True)
+class PositionView:
+    security_id: str
+    total_quantity: int
+    sellable_quantity: int
+    locked_quantity: int
+    unsellable_quantity: int
+    cost_basis: Decimal
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "security_id", str(self.security_id).zfill(6))
+        object.__setattr__(self, "cost_basis", _money(self.cost_basis))
+
+
+@dataclass(frozen=True)
 class PortfolioLedgerEntry:
     event_id: int
     event_type: PortfolioEventType
@@ -144,6 +162,38 @@ class PortfolioLedger:
             return self._apply_sell(fill)
         raise PortfolioLedgerError(f"unsupported order side: {side}")
 
+    def apply_execution_result(self, fill: FillLedgerEntry) -> PortfolioLedgerEntry | None:
+        if fill.status == "FILLED":
+            return self.apply_fill(fill)
+        if fill.order_intent.side != "sell":
+            return None
+
+        position = self.positions.get(fill.order_intent.security_id)
+        if position is None or position.locked_quantity == 0:
+            return None
+        release_quantity = min(fill.requested_quantity, position.locked_quantity)
+        if release_quantity <= 0:
+            return None
+        return self.release_lock(
+            fill.order_intent.security_id,
+            release_quantity,
+            trade_date=fill.execution_date,
+        )
+
+    def position_view(self) -> dict[str, PositionView]:
+        return {
+            security_id: PositionView(
+                security_id=position.security_id,
+                total_quantity=position.total_quantity,
+                sellable_quantity=position.sellable_quantity,
+                locked_quantity=position.locked_quantity,
+                unsellable_quantity=position.unsellable_quantity,
+                cost_basis=position.cost_basis,
+            )
+            for security_id, position in sorted(self.positions.items())
+            if position.total_quantity > 0
+        }
+
     def unlock_positions(self, trade_date: date) -> int:
         unlocked_count = 0
         for position in self.positions.values():
@@ -168,6 +218,11 @@ class PortfolioLedger:
             raise InsufficientSellableQuantityError(
                 f"lock quantity {quantity} exceeds sellable quantity "
                 f"{position.sellable_quantity} for {position.security_id}"
+            )
+        if quantity % 100 != 0 and quantity != position.sellable_quantity:
+            raise OddLotSellError(
+                "ODD_LOT_SELL: odd-lot sell quantity is only allowed when "
+                "liquidating the full sellable position"
             )
 
         remaining_to_lock = quantity

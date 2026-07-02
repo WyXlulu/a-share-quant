@@ -10,6 +10,7 @@ from src.engine.execution import FillLedgerEntry
 from src.engine.portfolio_ledger import (
     CashState,
     InsufficientSellableQuantityError,
+    OddLotSellError,
     PortfolioLedger,
     PositionLot,
     PositionState,
@@ -219,6 +220,35 @@ class PortfolioLedgerTest(unittest.TestCase):
             ledger.lock_for_sell("000001", 1, trade_date=date(2026, 6, 30))
         _assert_position_aggregates_are_lot_derived(self, position)
 
+    def test_sell_lot_size_allows_round_lot_quantity(self) -> None:
+        ledger = _ledger_with_unlocked_lot(quantity=250)
+
+        ledger.lock_for_sell("000001", 200, trade_date=date(2026, 6, 30))
+
+        position = ledger.positions["000001"]
+        self.assertEqual(position.locked_quantity, 200)
+        self.assertEqual(position.sellable_quantity, 50)
+
+    def test_sell_lot_size_allows_full_position_with_odd_lot_tail(self) -> None:
+        ledger = _ledger_with_unlocked_lot(quantity=150)
+
+        ledger.lock_for_sell("000001", 150, trade_date=date(2026, 6, 30))
+
+        position = ledger.positions["000001"]
+        self.assertEqual(position.locked_quantity, 150)
+        self.assertEqual(position.sellable_quantity, 0)
+
+    def test_sell_lot_size_rejects_partial_odd_lot_sell(self) -> None:
+        ledger = _ledger_with_unlocked_lot(quantity=250)
+        before_positions = deepcopy(ledger.positions)
+        before_entries = list(ledger.ledger_entries)
+
+        with self.assertRaisesRegex(OddLotSellError, "ODD_LOT_SELL"):
+            ledger.lock_for_sell("000001", 150, trade_date=date(2026, 6, 30))
+
+        self.assertEqual(ledger.positions, before_positions)
+        self.assertEqual(ledger.ledger_entries, before_entries)
+
     def test_filled_sell_consumes_locked_inventory(self) -> None:
         ledger = _ledger(initial_cash=Decimal("0.00"))
         ledger.positions["000001"] = PositionState(
@@ -375,6 +405,23 @@ def _ledger(initial_cash: Decimal) -> PortfolioLedger:
             ]
         ),
     )
+
+
+def _ledger_with_unlocked_lot(quantity: int) -> PortfolioLedger:
+    ledger = _ledger(initial_cash=Decimal("0.00"))
+    ledger.positions["000001"] = PositionState(
+        "000001",
+        lots=[
+            PositionLot(
+                quantity=quantity,
+                cost_basis=Decimal(quantity) * Decimal("10.00"),
+                trade_date=date(2026, 6, 29),
+                sellable_from=date(2026, 6, 30),
+                is_unlocked=True,
+            )
+        ],
+    )
+    return ledger
 
 
 def _fill(

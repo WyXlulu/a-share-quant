@@ -11,6 +11,8 @@ from src.market_calendar import trading_calendar_from_dates
 from src.data import PITDataPortal
 from src.domain import TradeStatus
 from src.engine import DummyStrategy, EventDrivenClock, OrderIntent
+from src.engine.dummy_strategy import DummyRebalanceStrategy
+from src.engine.portfolio_ledger import CashState, PortfolioLedger, PositionLot, PositionState
 
 
 class DummyStrategyTest(unittest.TestCase):
@@ -55,6 +57,46 @@ class DummyStrategyTest(unittest.TestCase):
         self.assertTrue(intents)
         self.assertTrue(all(intent.quantity > 0 for intent in intents))
         self.assertTrue(all(intent.quantity % 100 == 0 for intent in intents))
+
+    def test_rebalance_strategy_sells_holdings_outside_target_and_buys_missing_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            table_path = Path(tmpdir) / "daily_bar_raw.parquet"
+            pd.DataFrame(_daily_bar_rows()).to_parquet(table_path, index=False)
+            portal = PITDataPortal({"daily_bar_raw": table_path, "security_master": table_path})
+            calendar = _calendar()
+            clock = EventDrivenClock("2026-06-29", "2026-06-29", calendar, portal)
+            ledger = PortfolioLedger(CashState(), calendar=calendar)
+            ledger.positions["000003"] = PositionState(
+                "000003",
+                lots=[
+                    PositionLot(
+                        quantity=100,
+                        cost_basis=1000,
+                        trade_date=date(2026, 6, 26),
+                        sellable_from=date(2026, 6, 29),
+                    )
+                ],
+            )
+            ledger.unlock_positions(date(2026, 6, 29))
+            strategy = DummyRebalanceStrategy(
+                rebalance_every_n_days=1,
+                target_count=2,
+                order_quantity=100,
+                portfolio_ledger=ledger,
+            )
+            by_date: dict[date, list[OrderIntent]] = {}
+
+            clock.run(lambda ctx: by_date.setdefault(ctx.trade_date, strategy.on_bar(ctx)))
+
+            intents = by_date[date(2026, 6, 29)]
+            self.assertEqual(
+                [(intent.security_id, intent.side, intent.quantity) for intent in intents],
+                [
+                    ("000003", "sell", 100),
+                    ("000001", "buy", 100),
+                    ("000002", "buy", 100),
+                ],
+            )
 
 
 def _run_strategy(

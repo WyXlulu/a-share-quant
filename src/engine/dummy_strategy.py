@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -80,3 +80,50 @@ class DummyStrategy:
         ].copy()
         security_ids = tradable["security_id"].astype(str).str.zfill(6).drop_duplicates()
         return sorted(security_ids.tolist())
+
+
+@dataclass
+class DummyRebalanceStrategy(DummyStrategy):
+    portfolio_ledger: Any = None
+
+    def on_bar(self, ctx: ClockContext) -> list[OrderIntent]:
+        is_rebalance_day = self._bar_index % self.rebalance_every_n_days == 0
+        self._bar_index += 1
+        if not is_rebalance_day:
+            return []
+
+        candidates = self._tradable_universe(ctx)
+        targets = set(candidates[: self.target_count])
+        position_view = (
+            self.portfolio_ledger.position_view()
+            if self.portfolio_ledger is not None
+            else {}
+        )
+
+        intents: list[OrderIntent] = []
+        for security_id in sorted(position_view):
+            position = position_view[security_id]
+            if security_id not in targets and position.sellable_quantity > 0:
+                intents.append(
+                    OrderIntent(
+                        security_id=security_id,
+                        side="sell",
+                        quantity=position.sellable_quantity,
+                        decision_date=ctx.trade_date,
+                        reason="fixed_id_order_dummy_rebalance_sell",
+                    )
+                )
+
+        for security_id in sorted(targets):
+            position = position_view.get(security_id)
+            if position is None or position.total_quantity == 0:
+                intents.append(
+                    OrderIntent(
+                        security_id=security_id,
+                        side="buy",
+                        quantity=self.order_quantity,
+                        decision_date=ctx.trade_date,
+                        reason="fixed_id_order_dummy_rebalance_buy",
+                    )
+                )
+        return intents
