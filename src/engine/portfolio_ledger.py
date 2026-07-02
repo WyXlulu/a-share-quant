@@ -11,7 +11,17 @@ from src.market_calendar import TradingCalendar
 
 MONEY_QUANT = Decimal("0.01")
 LotSource = Literal["BUY", "STOCK_DIVIDEND", "SPLIT", "TRANSFER"]
-PortfolioEventType = Literal["BUY_FILL", "SELL_FILL", "SELL_LOCK", "SELL_LOCK_RELEASE"]
+PortfolioEventType = Literal[
+    "BUY_FILL",
+    "SELL_FILL",
+    "SELL_LOCK",
+    "SELL_LOCK_RELEASE",
+    "CA_DIVIDEND_ACCRUED",
+    "CA_DIVIDEND_PAID",
+    "CA_SHARES_ADJUSTED",
+    "UNSUPPORTED_CORPORATE_EVENT",
+    "UNPROCESSED_CA",
+]
 
 
 class PortfolioLedgerError(ValueError):
@@ -148,6 +158,8 @@ class PortfolioLedger:
     calendar: TradingCalendar | None = None
     positions: dict[str, PositionState] = field(default_factory=dict)
     ledger_entries: list[PortfolioLedgerEntry] = field(default_factory=list)
+    tainted_securities: set[str] = field(default_factory=set)
+    pending_cash_dividends: dict[tuple[str, date], Decimal] = field(default_factory=dict)
 
     def apply_fill(self, fill: FillLedgerEntry) -> PortfolioLedgerEntry | None:
         if fill.status != "FILLED":
@@ -202,6 +214,148 @@ class PortfolioLedger:
         release_amount = min(reserved_cash, self.cash.frozen_cash)
         self.cash.frozen_cash = _money(self.cash.frozen_cash - release_amount)
         self.cash.available_cash = _money(self.cash.available_cash + release_amount)
+
+    def accrue_cash_dividend(
+        self,
+        security_id: str,
+        ex_date: date,
+        cash_dividend_per_share: Decimal,
+    ) -> PortfolioLedgerEntry | None:
+        position = self.positions.get(str(security_id).zfill(6))
+        if position is None or position.total_quantity <= 0:
+            return None
+        amount = _money(cash_dividend_per_share * Decimal(position.total_quantity))
+        if amount <= Decimal("0.00"):
+            return None
+
+        self.cash.receivable_cash = _money(self.cash.receivable_cash + amount)
+        self.pending_cash_dividends[(position.security_id, ex_date)] = _money(
+            self.pending_cash_dividends.get((position.security_id, ex_date), Decimal("0.00"))
+            + amount
+        )
+        entry = self._append_entry(
+            event_type="CA_DIVIDEND_ACCRUED",
+            security_id=position.security_id,
+            trade_date=ex_date,
+            quantity_delta=0,
+            cash_delta=Decimal("0.00"),
+            cost_basis_delta=Decimal("0.00"),
+            realized_pnl=Decimal("0.00"),
+            fill_reason="CASH_DIVIDEND_RECEIVABLE_ACCRUED_TAX_GROSS",
+            position=position,
+        )
+        self.assert_invariants()
+        return entry
+
+    def pay_cash_dividend(
+        self,
+        security_id: str,
+        ex_date: date,
+        pay_date: date,
+    ) -> PortfolioLedgerEntry | None:
+        normalized = str(security_id).zfill(6)
+        key = (normalized, ex_date)
+        amount = _money(self.pending_cash_dividends.pop(key, Decimal("0.00")))
+        if amount <= Decimal("0.00"):
+            return None
+
+        self.cash.receivable_cash = _money(self.cash.receivable_cash - amount)
+        self.cash.available_cash = _money(self.cash.available_cash + amount)
+        position = self._position(normalized)
+        entry = self._append_entry(
+            event_type="CA_DIVIDEND_PAID",
+            security_id=normalized,
+            trade_date=pay_date,
+            quantity_delta=0,
+            cash_delta=amount,
+            cost_basis_delta=Decimal("0.00"),
+            realized_pnl=Decimal("0.00"),
+            fill_reason="CASH_DIVIDEND_PAID_SIMPLIFIED_EX_DATE_PLUS_ONE",
+            position=position,
+        )
+        self.assert_invariants()
+        return entry
+
+    def apply_stock_dividend(
+        self,
+        security_id: str,
+        ex_date: date,
+        share_ratio: Decimal,
+    ) -> PortfolioLedgerEntry | None:
+        position = self.positions.get(str(security_id).zfill(6))
+        if position is None or position.total_quantity <= 0:
+            return None
+        share_quantity = int(Decimal(position.total_quantity) * share_ratio)
+        if share_quantity <= 0:
+            return None
+
+        position.lots.append(
+            PositionLot(
+                quantity=share_quantity,
+                cost_basis=Decimal("0.00"),
+                trade_date=ex_date,
+                sellable_from=ex_date,
+                source="STOCK_DIVIDEND",
+                is_unlocked=True,
+            )
+        )
+        entry = self._append_entry(
+            event_type="CA_SHARES_ADJUSTED",
+            security_id=position.security_id,
+            trade_date=ex_date,
+            quantity_delta=share_quantity,
+            cash_delta=Decimal("0.00"),
+            cost_basis_delta=Decimal("0.00"),
+            realized_pnl=Decimal("0.00"),
+            fill_reason="STOCK_DIVIDEND_SHARES_ADJUSTED",
+            position=position,
+        )
+        self.assert_invariants()
+        return entry
+
+    def mark_unsupported_corporate_event(
+        self,
+        security_id: str,
+        trade_date: date,
+        action_type: str,
+    ) -> PortfolioLedgerEntry | None:
+        position = self.positions.get(str(security_id).zfill(6))
+        if position is None or position.total_quantity <= 0:
+            return None
+        self.tainted_securities.add(position.security_id)
+        return self._append_entry(
+            event_type="UNSUPPORTED_CORPORATE_EVENT",
+            security_id=position.security_id,
+            trade_date=trade_date,
+            quantity_delta=0,
+            cash_delta=Decimal("0.00"),
+            cost_basis_delta=Decimal("0.00"),
+            realized_pnl=Decimal("0.00"),
+            fill_reason=f"UNSUPPORTED_CORPORATE_EVENT:{action_type}",
+            position=position,
+        )
+
+    def mark_unprocessed_corporate_action(
+        self,
+        security_id: str,
+        trade_date: date,
+        reason: str,
+    ) -> PortfolioLedgerEntry | None:
+        position = self.positions.get(str(security_id).zfill(6))
+        if position is None or position.total_quantity <= 0:
+            return None
+        self.tainted_securities.add(position.security_id)
+        return self._append_entry(
+            event_type="UNPROCESSED_CA",
+            security_id=position.security_id,
+            trade_date=trade_date,
+            quantity_delta=0,
+            cash_delta=Decimal("0.00"),
+            cost_basis_delta=Decimal("0.00"),
+            realized_pnl=Decimal("0.00"),
+            fill_reason=f"UNPROCESSED_CA:{reason}",
+            position=position,
+        )
 
     def position_view(self) -> dict[str, PositionView]:
         return {
