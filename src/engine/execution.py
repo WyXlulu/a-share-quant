@@ -20,6 +20,7 @@ PRICE_TICK = Decimal("0.01")
 PRICE_TOLERANCE = 1e-9
 MONEY_QUANT = Decimal("0.01")
 FillStatus = Literal["FILLED", "UNFILLED", "REJECTED", "SUSPENDED"]
+OrderTTL = Literal["NEXT_OPEN_ONLY"]
 LimitCheck = Literal[
     "NOT_EVALUATED",
     "APPLIED",
@@ -58,6 +59,7 @@ class FillLedgerEntry:
     transfer_fee: Decimal = Decimal("0.00")
     total_fee: Decimal = Decimal("0.00")
     net_amount: Decimal = Decimal("0.00")
+    reserved_cash: Decimal = Decimal("0.00")
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,7 @@ class PriceLimitRule:
 
 @dataclass(frozen=True)
 class LimitRuleTable:
+    version: str = "limit_rule_table_v1"
     rules_by_board: dict[str, tuple[PriceLimitRule, ...]] = field(
         default_factory=lambda: {
             "主板": (
@@ -147,6 +150,40 @@ class LimitRuleTable:
         if not active_rules:
             return None
         return sorted(active_rules, key=lambda rule: rule.effective_date)[-1]
+
+
+@dataclass(frozen=True)
+class LockedOrder:
+    order_intent: OrderIntent
+    locked_quantity: int
+    reference_price: Decimal | None
+    price_cap: Decimal | None
+    price_floor: Decimal | None
+    reserved_cash: Decimal
+    reference_price_ts: pd.Timestamp
+    ruleset_version: str
+    ttl: OrderTTL = "NEXT_OPEN_ONLY"
+    limit_check: LimitCheck = "NOT_EVALUATED"
+
+    def __post_init__(self) -> None:
+        if self.locked_quantity < 0:
+            raise ValueError("locked_quantity cannot be negative")
+        object.__setattr__(
+            self,
+            "reference_price",
+            None if self.reference_price is None else _money(self.reference_price),
+        )
+        object.__setattr__(
+            self,
+            "price_cap",
+            None if self.price_cap is None else _money(self.price_cap),
+        )
+        object.__setattr__(
+            self,
+            "price_floor",
+            None if self.price_floor is None else _money(self.price_floor),
+        )
+        object.__setattr__(self, "reserved_cash", _money(self.reserved_cash))
 
 
 @dataclass(frozen=True)
@@ -221,33 +258,116 @@ class T1OpenExecutor:
     limit_rule_table: LimitRuleTable = field(default_factory=LimitRuleTable)
     lot_size_policy: LotSizePolicy = "ROUND_DOWN"
 
-    def execute(self, order_intents: list[OrderIntent]) -> list[FillLedgerEntry]:
-        return [self.execute_one(order_intent) for order_intent in order_intents]
-
-    def execute_one(self, order_intent: OrderIntent) -> FillLedgerEntry:
+    def lock_order(
+        self,
+        order_intent: OrderIntent,
+        available_cash: Decimal | None = None,
+        *,
+        strict_pit: bool = True,
+    ) -> LockedOrder | FillLedgerEntry:
         next_session = self._next_session(order_intent.decision_date)
         if next_session is None:
             return _unfilled(order_intent, None, "NO_NEXT_SESSION")
 
-        adjusted_quantity = self._buy_lot_quantity(order_intent)
-        if adjusted_quantity is None:
+        locked_quantity = self._buy_lot_quantity(order_intent)
+        if locked_quantity is None:
             return _rejected(
                 order_intent,
-                next_session,
+                None,
                 None,
                 "ODD_LOT_REJECTED",
                 requested_quantity=order_intent.quantity,
             )
 
+        reference = self._reference_price(order_intent.security_id, order_intent.decision_date)
+        limit_check = "NOT_EVALUATED"
+        price_cap: Decimal | None = None
+        price_floor: Decimal | None = None
+        if reference is None:
+            limit_check = "SKIPPED_NO_PREV_CLOSE"
+        else:
+            master_asof = order_intent.decision_date if strict_pit else next_session
+            master = self._security_master(order_intent.security_id, master_asof)
+            if master is None:
+                limit_check = "SKIPPED_NO_MASTER"
+            else:
+                limit_rule = self.limit_rule_table.resolve(master.board, next_session)
+                if limit_rule is None:
+                    limit_check = "SKIPPED_NO_RULE"
+                else:
+                    limit_prices = _limit_prices_for_rule(
+                        self.calendar,
+                        float(reference),
+                        limit_rule,
+                        master.list_date,
+                        next_session,
+                    )
+                    if limit_prices is None:
+                        limit_check = "EXEMPT_NEW_LISTING"
+                    else:
+                        limit_up, limit_down = limit_prices
+                        price_cap = _money(Decimal(str(limit_up)))
+                        price_floor = _money(Decimal(str(limit_down)))
+                        limit_check = "APPLIED"
+
+        reserved_cash = Decimal("0.00")
+        if order_intent.side == "buy" and locked_quantity > 0:
+            reservation_price = price_cap or reference
+            if reservation_price is not None:
+                reserved_cash = self.fee_schedule.calculate(
+                    "buy",
+                    next_session,
+                    float(reservation_price),
+                    locked_quantity,
+                ).net_amount
+        if (
+            order_intent.side == "buy"
+            and available_cash is not None
+            and reserved_cash > _money(available_cash)
+        ):
+            return _rejected(
+                order_intent,
+                None,
+                None,
+                "CASH_INSUFFICIENT",
+                requested_quantity=order_intent.quantity,
+            )
+
+        return LockedOrder(
+            order_intent=order_intent,
+            locked_quantity=locked_quantity,
+            reference_price=reference,
+            price_cap=price_cap,
+            price_floor=price_floor,
+            reserved_cash=reserved_cash,
+            reference_price_ts=_daily_bar_asof(order_intent.decision_date),
+            ruleset_version=self.limit_rule_table.version,
+            ttl="NEXT_OPEN_ONLY",
+            limit_check=limit_check,
+        )
+
+    def execute(self, orders: list[LockedOrder | OrderIntent]) -> list[FillLedgerEntry]:
+        return [self.execute_one(order) for order in orders]
+
+    def execute_one(self, order: LockedOrder | OrderIntent) -> FillLedgerEntry:
+        locked_order = self._ensure_locked_order(order)
+        if isinstance(locked_order, FillLedgerEntry):
+            return locked_order
+
+        order_intent = locked_order.order_intent
+        next_session = self._next_session(order_intent.decision_date)
+        if next_session is None:
+            return _unfilled(order_intent, None, "NO_NEXT_SESSION")
+
         execution_bar = self._execution_bar(order_intent.security_id, next_session)
         if execution_bar is None:
-            return _unfilled(order_intent, next_session, "NO_OPEN_PRICE")
+            return _unfilled(order_intent, next_session, "NO_OPEN_PRICE", locked_order.reserved_cash)
         if execution_bar.trade_status == TradeStatus.SUSPENDED.value:
-            return _suspended(order_intent, next_session)
+            return _suspended(order_intent, next_session, locked_order.reserved_cash)
         if execution_bar.open_price is None:
-            return _unfilled(order_intent, next_session, "NO_OPEN_PRICE")
+            return _unfilled(order_intent, next_session, "NO_OPEN_PRICE", locked_order.reserved_cash)
 
-        limit_evaluation = self._limit_evaluation(order_intent, next_session, execution_bar.open_price)
+        limit_evaluation = self._limit_evaluation(locked_order, execution_bar.open_price)
         if limit_evaluation.rejection_reason is not None:
             return _rejected(
                 order_intent,
@@ -256,20 +376,21 @@ class T1OpenExecutor:
                 limit_evaluation.rejection_reason,
                 requested_quantity=order_intent.quantity,
                 limit_check=limit_evaluation.limit_check,
+                reserved_cash=locked_order.reserved_cash,
             )
 
         fees = self.fee_schedule.calculate(
             order_intent.side,
             next_session,
             execution_bar.open_price,
-            adjusted_quantity,
+            locked_order.locked_quantity,
         )
         return FillLedgerEntry(
             order_intent=order_intent,
             intent_date=order_intent.decision_date,
             execution_date=next_session,
             execution_price=execution_bar.open_price,
-            filled_quantity=adjusted_quantity,
+            filled_quantity=locked_order.locked_quantity,
             status="FILLED",
             reason="T1_OPEN_FILLED",
             requested_quantity=order_intent.quantity,
@@ -280,7 +401,13 @@ class T1OpenExecutor:
             transfer_fee=fees.transfer_fee,
             total_fee=fees.total_fee,
             net_amount=fees.net_amount,
+            reserved_cash=locked_order.reserved_cash,
         )
+
+    def _ensure_locked_order(self, order: LockedOrder | OrderIntent) -> LockedOrder | FillLedgerEntry:
+        if isinstance(order, LockedOrder):
+            return order
+        return self.lock_order(order, strict_pit=False)
 
     def _next_session(self, decision_date: date) -> date | None:
         try:
@@ -324,42 +451,29 @@ class T1OpenExecutor:
         open_price = None if pd.isna(open_value) else float(open_value)
         return _ExecutionBar(open_price=open_price, trade_status=trade_status)
 
-    def _limit_evaluation(
-        self,
-        order_intent: OrderIntent,
-        execution_date: date,
-        open_price: float,
-    ) -> "_LimitEvaluation":
-        previous_close = self._previous_close(order_intent.security_id, order_intent.decision_date)
-        if previous_close is None:
-            return _LimitEvaluation(rejection_reason=None, limit_check="SKIPPED_NO_PREV_CLOSE")
-
-        master = self._security_master(order_intent.security_id, execution_date)
-        if master is None:
-            return _LimitEvaluation(rejection_reason=None, limit_check="SKIPPED_NO_MASTER")
-
-        limit_rule = self.limit_rule_table.resolve(master.board, execution_date)
-        if limit_rule is None:
-            return _LimitEvaluation(rejection_reason=None, limit_check="SKIPPED_NO_RULE")
-
-        # TODO(DECISIONS.md): ex-date limit reference prices need corporate-action adjusted
-        # reference-price handling; current implementation still uses previous raw close.
-        limit_prices = _limit_prices_for_rule(
-            self.calendar,
-            previous_close,
-            limit_rule,
-            master.list_date,
-            execution_date,
-        )
-        if limit_prices is None:
-            return _LimitEvaluation(rejection_reason=None, limit_check="EXEMPT_NEW_LISTING")
-
-        limit_up, limit_down = limit_prices
-        if order_intent.side == "buy" and open_price >= limit_up - PRICE_TOLERANCE:
+    def _limit_evaluation(self, locked_order: LockedOrder, open_price: float) -> "_LimitEvaluation":
+        order_intent = locked_order.order_intent
+        if locked_order.limit_check != "APPLIED":
+            return _LimitEvaluation(rejection_reason=None, limit_check=locked_order.limit_check)
+        if (
+            order_intent.side == "buy"
+            and locked_order.price_cap is not None
+            and open_price >= float(locked_order.price_cap) - PRICE_TOLERANCE
+        ):
             return _LimitEvaluation(rejection_reason="LIMIT_UP_NO_BUY", limit_check="APPLIED")
-        if order_intent.side == "sell" and open_price <= limit_down + PRICE_TOLERANCE:
+        if (
+            order_intent.side == "sell"
+            and locked_order.price_floor is not None
+            and open_price <= float(locked_order.price_floor) + PRICE_TOLERANCE
+        ):
             return _LimitEvaluation(rejection_reason="LIMIT_DOWN_NO_SELL", limit_check="APPLIED")
         return _LimitEvaluation(rejection_reason=None, limit_check="APPLIED")
+
+    def _reference_price(self, security_id: str, intent_date: date) -> Decimal | None:
+        previous_close = self._previous_close(security_id, intent_date)
+        if previous_close is None:
+            return None
+        return _money(Decimal(str(previous_close)))
 
     def _previous_close(self, security_id: str, intent_date: date) -> float | None:
         rows = self.portal.query(
@@ -430,6 +544,7 @@ def _unfilled(
     order_intent: OrderIntent,
     execution_date: date | None,
     reason: str,
+    reserved_cash: Decimal = Decimal("0.00"),
 ) -> FillLedgerEntry:
     return FillLedgerEntry(
         order_intent=order_intent,
@@ -440,6 +555,7 @@ def _unfilled(
         status="UNFILLED",
         reason=reason,
         requested_quantity=order_intent.quantity,
+        reserved_cash=reserved_cash,
     )
 
 
@@ -450,6 +566,7 @@ def _rejected(
     reason: str,
     requested_quantity: int | None = None,
     limit_check: LimitCheck = "NOT_EVALUATED",
+    reserved_cash: Decimal = Decimal("0.00"),
 ) -> FillLedgerEntry:
     return FillLedgerEntry(
         order_intent=order_intent,
@@ -461,12 +578,14 @@ def _rejected(
         reason=reason,
         requested_quantity=order_intent.quantity if requested_quantity is None else requested_quantity,
         limit_check=limit_check,
+        reserved_cash=reserved_cash,
     )
 
 
 def _suspended(
     order_intent: OrderIntent,
     execution_date: date,
+    reserved_cash: Decimal = Decimal("0.00"),
 ) -> FillLedgerEntry:
     return FillLedgerEntry(
         order_intent=order_intent,
@@ -477,6 +596,7 @@ def _suspended(
         status="SUSPENDED",
         reason="NO_TRADE_SUSPENDED",
         requested_quantity=order_intent.quantity,
+        reserved_cash=reserved_cash,
     )
 
 

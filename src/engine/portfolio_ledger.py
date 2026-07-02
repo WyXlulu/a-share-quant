@@ -165,6 +165,9 @@ class PortfolioLedger:
     def apply_execution_result(self, fill: FillLedgerEntry) -> PortfolioLedgerEntry | None:
         if fill.status == "FILLED":
             return self.apply_fill(fill)
+        if fill.order_intent.side == "buy":
+            self.release_cash_reservation(fill.reserved_cash)
+            return None
         if fill.order_intent.side != "sell":
             return None
 
@@ -179,6 +182,26 @@ class PortfolioLedger:
             release_quantity,
             trade_date=fill.execution_date,
         )
+
+    def reserve_cash_for_buy(self, locked_order: object) -> None:
+        order_intent = getattr(locked_order, "order_intent")
+        if order_intent.side != "buy":
+            return
+        reserved_cash = _money(getattr(locked_order, "reserved_cash"))
+        if reserved_cash <= Decimal("0.00"):
+            return
+        if self.cash.available_cash < reserved_cash:
+            raise PortfolioLedgerError("available_cash is insufficient for reservation")
+        self.cash.available_cash = _money(self.cash.available_cash - reserved_cash)
+        self.cash.frozen_cash = _money(self.cash.frozen_cash + reserved_cash)
+
+    def release_cash_reservation(self, reserved_cash: Decimal) -> None:
+        reserved_cash = _money(reserved_cash)
+        if reserved_cash <= Decimal("0.00"):
+            return
+        release_amount = min(reserved_cash, self.cash.frozen_cash)
+        self.cash.frozen_cash = _money(self.cash.frozen_cash - release_amount)
+        self.cash.available_cash = _money(self.cash.available_cash + release_amount)
 
     def position_view(self) -> dict[str, PositionView]:
         return {
@@ -338,7 +361,15 @@ class PortfolioLedger:
             source="BUY",
         )
 
-        self.cash.available_cash = _money(self.cash.available_cash - net_amount)
+        reserved_cash = _money(fill.reserved_cash)
+        if reserved_cash > Decimal("0.00"):
+            frozen_debit = min(reserved_cash, self.cash.frozen_cash)
+            self.cash.frozen_cash = _money(self.cash.frozen_cash - frozen_debit)
+            refund = _money(reserved_cash - net_amount)
+            if refund > Decimal("0.00"):
+                self.cash.available_cash = _money(self.cash.available_cash + refund)
+        else:
+            self.cash.available_cash = _money(self.cash.available_cash - net_amount)
         position.lots.append(lot)
         entry = self._append_entry(
             event_type="BUY_FILL",

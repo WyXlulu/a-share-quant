@@ -11,7 +11,7 @@ import pandas as pd
 
 from src.data import PITDataPortal
 from src.domain import TradeStatus
-from src.engine import EventDrivenClock, T1OpenExecutor
+from src.engine import EventDrivenClock, LockedOrder, T1OpenExecutor
 from src.engine.dummy_strategy import DummyRebalanceStrategy, OrderIntent
 from src.engine.execution import FillLedgerEntry, LimitRuleTable
 from src.engine.portfolio_ledger import (
@@ -101,7 +101,7 @@ def _run_sell_path(
         )
         executor = T1OpenExecutor(calendar, portal, end_date=date(2026, 6, 30))
         clock = EventDrivenClock("2026-06-29", "2026-06-30", calendar, portal)
-        pending_sells: list[OrderIntent] = []
+        pending_sells: list[LockedOrder] = []
         first_day_intents: list[OrderIntent] = []
         fills: list[FillLedgerEntry] = []
 
@@ -125,7 +125,10 @@ def _run_sell_path(
                         intent.quantity,
                         trade_date=ctx.trade_date,
                     )
-                    pending_sells.append(intent)
+                    locked_order = executor.lock_order(intent)
+                    if not isinstance(locked_order, LockedOrder):
+                        raise AssertionError(f"expected LockedOrder, got {locked_order}")
+                    pending_sells.append(locked_order)
 
         clock.run(on_bar)
         return SellPathResult(ledger=ledger, first_day_intents=first_day_intents, fills=fills)
