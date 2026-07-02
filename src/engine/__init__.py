@@ -1,6 +1,7 @@
 from .event_clock import AsofDataPortal, ClockContext, EventDrivenClock
 from .corporate_action_handler import CorporateActionHandler
-from .dummy_strategy import DummyStrategy, OrderIntent
+from .backtest_runner import CachedPITDataPortal
+from .dummy_strategy import DummyRebalanceStrategy, DummyStrategy, OrderIntent
 from .execution import (
     BROKER_ADAPTER_RULE,
     FeeSchedule,
@@ -13,7 +14,9 @@ __all__ = [
     "AsofDataPortal",
     "ClockContext",
     "BROKER_ADAPTER_RULE",
+    "CachedPITDataPortal",
     "CorporateActionHandler",
+    "DummyRebalanceStrategy",
     "DummyStrategy",
     "EventDrivenClock",
     "FeeSchedule",
