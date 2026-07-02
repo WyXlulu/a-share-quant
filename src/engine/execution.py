@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -13,12 +13,20 @@ from src.data import PITDataPortal
 from src.domain import TradeStatus
 from src.engine.dummy_strategy import OrderIntent
 
+if TYPE_CHECKING:
+    from src.engine.portfolio_ledger import PortfolioLedger
+
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 DAILY_BAR_ASOF_TIME = time(15, 0, 0)
 PRICE_TICK = Decimal("0.01")
 PRICE_TOLERANCE = 1e-9
 MONEY_QUANT = Decimal("0.01")
+BROKER_ADAPTER_RULE = (
+    "同一T+1开盘轮次，执行顺序为先处理全部卖单、再处理全部买单；"
+    "卖出FILLED所释放的净额现金，计入本轮买单的可用现金。"
+    "实盘对接时须逐字核对券商真实资金可用规则。"
+)
 FillStatus = Literal["FILLED", "UNFILLED", "REJECTED", "SUSPENDED"]
 OrderTTL = Literal["NEXT_OPEN_ONLY"]
 LimitCheck = Literal[
@@ -348,6 +356,50 @@ class T1OpenExecutor:
 
     def execute(self, orders: list[LockedOrder | OrderIntent]) -> list[FillLedgerEntry]:
         return [self.execute_one(order) for order in orders]
+
+    def execute_open_round(
+        self,
+        locked_orders: list[LockedOrder],
+        portfolio_ledger: "PortfolioLedger",
+    ) -> list[FillLedgerEntry]:
+        """Execute one same-decision-date T+1 open round using BROKER_ADAPTER_RULE.
+
+        This is only a broker-adapter execution rule: T-day buy locking remains
+        conservative and must not pre-borrow cash from future sell fills, because
+        a T+1 sell can still be rejected, suspended, or missing an open price.
+        """
+        if not locked_orders:
+            return []
+
+        decision_dates = {
+            locked_order.order_intent.decision_date for locked_order in locked_orders
+        }
+        if len(decision_dates) != 1:
+            raise ValueError("execute_open_round requires one decision_date")
+
+        sell_orders = [
+            locked_order
+            for locked_order in locked_orders
+            if locked_order.order_intent.side == "sell"
+        ]
+        buy_orders = [
+            locked_order
+            for locked_order in locked_orders
+            if locked_order.order_intent.side == "buy"
+        ]
+
+        fills: list[FillLedgerEntry] = []
+        sell_fills = [self.execute_one(locked_order) for locked_order in sell_orders]
+        for fill in sell_fills:
+            portfolio_ledger.apply_execution_result(fill)
+        fills.extend(sell_fills)
+
+        for locked_order in buy_orders:
+            fill = self.execute_one(locked_order)
+            portfolio_ledger.apply_execution_result(fill)
+            fills.append(fill)
+
+        return fills
 
     def execute_one(self, order: LockedOrder | OrderIntent) -> FillLedgerEntry:
         locked_order = self._ensure_locked_order(order)

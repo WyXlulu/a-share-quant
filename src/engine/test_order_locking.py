@@ -29,6 +29,32 @@ class OrderLockingTest(unittest.TestCase):
         self.assertEqual(high_open.fills[0].reason, "LIMIT_UP_NO_BUY")
         self.assertEqual(high_open.fills[0].execution_price, 11.0)
 
+    def test_ex009_gap_open_keeps_locked_quantity_and_refunds_price_improvement(self) -> None:
+        low_open = _lock_and_execute(t1_open=9.0)
+        high_open = _lock_and_execute(t1_open=11.0)
+
+        low_locked = low_open.locked_orders[0]
+        low_fill = low_open.fills[0]
+        high_fill = high_open.fills[0]
+
+        self.assertEqual(low_fill.status, "FILLED")
+        self.assertEqual(low_fill.filled_quantity, low_locked.locked_quantity)
+        self.assertEqual(low_fill.filled_quantity, 100)
+        self.assertEqual(low_fill.reserved_cash - low_fill.net_amount, Decimal("200.00"))
+
+        ledger = PortfolioLedger(
+            CashState(settled_cash=Decimal("2000.00"), available_cash=Decimal("2000.00")),
+            calendar=_calendar(),
+        )
+        ledger.reserve_cash_for_buy(low_locked)
+        ledger.apply_execution_result(low_fill)
+
+        self.assertEqual(ledger.cash.frozen_cash, Decimal("0.00"))
+        self.assertEqual(ledger.cash.available_cash, Decimal("1094.99"))
+        self.assertEqual(high_fill.status, "REJECTED")
+        self.assertEqual(high_fill.reason, "LIMIT_UP_NO_BUY")
+        self.assertEqual(high_fill.filled_quantity, 0)
+
     def test_reserved_cash_covers_theoretical_limit_up_worst_case(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             executor = _executor(tmpdir, _rows(t1_open=11.0))
