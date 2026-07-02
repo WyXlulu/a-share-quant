@@ -140,3 +140,12 @@
 - **决定**：制度性数字（费率、涨跌幅、实施日期、首日限价规则等）的测试断言必须来自外部事实源，如法规、公告、交易所规则或已确认的版本表；不得从当前实现反推。
 - **理由**：顺着实现写断言会把 bug 固化为绿灯。本次印花税测试曾断言 2023-08-27 税率为 0，正是实现错误反向污染测试的例子。后续凡涉及制度性数字，测试应先写明外部事实口径，再验证实现是否符合。
 - **备选**：以当前代码行为作为测试预期（无法发现规则实现错误，放弃）。
+
+---
+
+## 2026-07-01 | 审计修复包一:工程修复
+
+- **发现**：`src/calendar` 与 Python 标准库 `calendar` 同名，导致 `unittest discover` 在部分环境下导入漂移或失效；依靠手工模块列表运行测试，存在新增测试静默漏跑风险。数据依赖测试在无本地 parquet/manifest 数据的新机器上会 error，而不是报告显式 skip。
+- **原因**：项目包名占用了标准库名称；测试入口没有统一自动发现机制；真实数据文件未入 git，数据契约测试缺少缺文件前置检查。
+- **修复**：用 `git mv` 将 `src/calendar` 改名为 `src/market_calendar`，并更新全项目 import；为 `test_l1_raw`、`test_security_master`、`test_corporate_actions`、`test_quarantine_vendor_adjusted` 的真实数据依赖用例增加缺文件显式 skip；新增 `run_tests.py`，通过 `unittest discover` 自动发现 `src` 下所有 `test_*.py`；补充附注标签 `phase0-complete` 与 `spec-frozen`。
+- **验证**：`.venv\Scripts\python.exe run_tests.py` discover 发现 50 个测试，与原显式测试函数数 50 一致；当前有数据环境下 `passed=50, skipped=0, failures=0, errors=0`；全项目检查无旧 calendar import 路径残留。
