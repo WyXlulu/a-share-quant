@@ -149,3 +149,13 @@
 - **原因**：项目包名占用了标准库名称；测试入口没有统一自动发现机制；真实数据文件未入 git，数据契约测试缺少缺文件前置检查。
 - **修复**：用 `git mv` 将 `src/calendar` 改名为 `src/market_calendar`，并更新全项目 import；为 `test_l1_raw`、`test_security_master`、`test_corporate_actions`、`test_quarantine_vendor_adjusted` 的真实数据依赖用例增加缺文件显式 skip；新增 `run_tests.py`，通过 `unittest discover` 自动发现 `src` 下所有 `test_*.py`；补充附注标签 `phase0-complete` 与 `spec-frozen`。
 - **验证**：`.venv\Scripts\python.exe run_tests.py` discover 发现 50 个测试，与原显式测试函数数 50 一致；当前有数据环境下 `passed=50, skipped=0, failures=0, errors=0`；全项目检查无旧 calendar import 路径残留。
+
+---
+
+## 2026-07-01 | 审计修复包二:语义修复
+
+- **发现**：CA 台账 `available_at` 曾等于 `ex_date`，会使除权日参考价修复被自身 PIT 闸门阻塞；取证显示 `announcement_date` 100% 非空，领先除权日 0-17 天。限价检查曾 fail-open，缺前收盘、缺 security master 或 T 日停牌时会静默跳过限价判断。EX-005 lot size 曾无执行引擎级强制。
+- **原因**：公司行动台账没有分离事件发生时间与可知时间；执行层把“无法构造限价上下文”和“无需限价拒单”都折叠成 `None`；订单数量只在 dummy strategy 层校验，executor 没有独立防线。
+- **修复**：CA 台账改为 `event_ts=ex_date 15:00 Asia/Shanghai`、`available_at=announcement_date 15:00 Asia/Shanghai`，公告日缺失时 fallback 到 ex-date 并计数入 manifest；限价前收盘改为通过同一 PIT Portal 在 T 日 as-of 下向前回看 60 个交易日最近非空 close，并在 `FillLedgerEntry.limit_check` 记录 `APPLIED`、各类 `SKIPPED_*` 或 `EXEMPT_NEW_LISTING`；买单 lot size 在 `T1OpenExecutor` 成交前强制，默认 `ROUND_DOWN` 到 100 股整数倍，可配 `REJECT`，并用 `requested_quantity` 留存原始订单数量。卖单零股规则留待持仓账本步完整处理。
+- **验证**：CA manifest 记录 `announcement_date_non_null_count=3075`、fallback=0、领先区间 0-17 天，唯一 0 天差证券为 `601318`；CA Portal 测试已验证公告日 15:00 后、除权日前可见。限价四类测试覆盖停牌复牌向前取前收盘、无前收盘、无 master、正常 `APPLIED`；lot size 三类测试覆盖默认向下取整、`REJECT` 策略、整手不变。`.venv\Scripts\python.exe run_tests.py` 全量 `total=58, passed=58, skipped=0, failures=0, errors=0`。
+- **后续**：除权日限价参考价仍有 TODO，需在 CA 账本步接入公司行动调整后的参考价；本次 CA `available_at` 修复是该工作的前置解锁。
