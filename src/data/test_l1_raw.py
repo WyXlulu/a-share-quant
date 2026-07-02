@@ -6,12 +6,20 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data.akshare_adapter import normalize_vendor_daily_frame
 from src.domain import DAILY_BAR_REQUIRED_COLUMNS, BarFrequency, PriceBasis, TradeStatus
+
+try:
+    from src.data.akshare_adapter import normalize_vendor_daily_frame
+except ModuleNotFoundError as exc:
+    if exc.name != "akshare":
+        raise
+    normalize_vendor_daily_frame = None
 
 
 class L1RawContractTest(unittest.TestCase):
     def setUp(self) -> None:
+        if normalize_vendor_daily_frame is None:
+            self.skipTest("akshare未安装")
         self.l1_path = Path("data/l1_raw/daily_bar_raw.parquet")
         self.manifest_path = Path("data/l1_raw/manifest.json")
         self.quarantined_hfq_path = Path("data/quarantine/vendor_adjusted/hs300_daily_10y.parquet")

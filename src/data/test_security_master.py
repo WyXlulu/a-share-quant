@@ -6,15 +6,27 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data.build_security_master import (
-    EXPLORATORY_TAINTED,
-    POINT_IN_TIME_CURRENT_SNAPSHOT_ONLY,
-    board_from_security_id,
-)
 from src.data.pit_data_portal import PITDataPortal
+
+try:
+    from src.data.build_security_master import (
+        EXPLORATORY_TAINTED,
+        POINT_IN_TIME_CURRENT_SNAPSHOT_ONLY,
+        board_from_security_id,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "akshare":
+        raise
+    EXPLORATORY_TAINTED = None
+    POINT_IN_TIME_CURRENT_SNAPSHOT_ONLY = None
+    board_from_security_id = None
 
 
 class SecurityMasterTest(unittest.TestCase):
+    def setUp(self) -> None:
+        if board_from_security_id is None:
+            self.skipTest("akshare未安装")
+
     def _load_local_data(self) -> None:
         self.security_master_path = Path("data/l1_raw/security_master.parquet")
         self.manifest_path = Path("data/l1_raw/security_master_manifest.json")

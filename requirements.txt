@@ -1,0 +1,7 @@
+# Python 3.11
+# 安装: pip install -r requirements.txt
+# 国内可加 -i https://pypi.tuna.tsinghua.edu.cn/simple
+akshare==1.18.64
+matplotlib==3.11.0
+pandas==3.0.3
+pyarrow==24.0.0

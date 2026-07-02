@@ -11,7 +11,7 @@
   数据获取 → 信号生成 → 回测验证 → dashboard/监控 →（券商通道）实盘执行。
 - 明确预期：本项目不保证盈利；目标是做出一个**工程可靠、可迭代、风险可控**的系统，盈利取决于策略本身。
 
-**当前阶段：Phase 1 — 事件驱动引擎(轨道A)**
+**当前阶段：Phase 1 已完成(毕业审计通过),Phase 2 未启动**
 
 ---
 
@@ -31,7 +31,7 @@
 | 存储 | 自建 | parquet / duckdb（起步够） |
 | 特征 / 因子 | 自建 | 自写 |
 | 模型 / 信号 | 自建 | ML 栈（alpha 不可 vibe-code） |
-| 回测引擎 | 自建 | backtrader 或自建事件驱动 |
+| 回测引擎 | 自建 | 自建事件驱动引擎(已实现,含LT-002不变量与快路径等价哨兵) |
 | dashboard / 监控 | 自建 | Streamlit 起步 |
 | **执行下单** | **券商** | **miniQMT `xttrader`（xtquant）** |
 | 风控 / kill switch | 跨区 | 自写 |
@@ -44,9 +44,9 @@
 
 | 项 | 当前值 | 说明 |
 |---|---|---|
-| 券商档位 | 【待确认】推荐：低门槛起步（如国金 ~10 万档） | = 资金门槛 = 项目总闸 |
-| 研究层部署 | 【待确认】如：本机 | 数据/模型/回测/dashboard，放哪都行 |
-| 执行层部署 | 【待确认】需常开 Windows | QMT 仅 Windows；本机/VM/云 Windows |
+| 券商档位 | 已决策暂缓至上线前（见 DECISIONS） | = 资金门槛 = 项目总闸 |
+| 研究层部署 | 本机 | 数据/模型/回测/dashboard，当前均在本地仓库与本地数据目录运行 |
+| 执行层部署 | 已决策暂缓至上线前（见 DECISIONS） | QMT 仅 Windows；本机/VM/云 Windows 方案上线前再定 |
 | 数据源 | akshare（免费验证）+ Tushare Pro | 中低频够用 |
 | 复权口径 | **等比复权** | 与 QMT 实盘一致，防 mismatch |
 | 财务数据 | point-in-time | 防未来函数 |
@@ -69,7 +69,7 @@
 - 语言：Python
 - 数据：akshare / Tushare Pro
 - 存储：parquet / duckdb
-- 回测：backtrader 或自建事件驱动
+- 回测：自建事件驱动引擎(已实现,含LT-002不变量与快路径等价哨兵)
 - dashboard：Streamlit（起步）
 - 执行：xtquant（`xtdata` 取行情 / `xttrader` 下单）
 

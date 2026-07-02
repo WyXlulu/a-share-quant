@@ -12,9 +12,13 @@ class QuarantineManifestTest(unittest.TestCase):
         self.manifest_path = Path("data/quarantine/vendor_adjusted/manifest.json")
         if not self.manifest_path.exists():
             self.skipTest(f"本地数据文件不存在: {self.manifest_path}")
+        self.manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        for item in self.manifest["files"]:
+            if item["sha256"] and not Path(item["quarantine_path"]).exists():
+                self.skipTest(f"本地数据文件不存在: {item['quarantine_path']}")
 
     def test_vendor_adjusted_files_are_quarantined_and_manifested(self) -> None:
-        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        manifest = self.manifest
         self.assertEqual(manifest["price_basis"], PriceBasis.VENDOR_ADJUSTED.value)
         self.assertEqual(manifest["source_semantics"], SOURCE_SEMANTICS_UNVERIFIED_FOR_PIT)
         self.assertEqual(manifest["read_policy"], "FORBIDDEN_FOR_L1_FEATURE_EXECUTION")
