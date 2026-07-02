@@ -9,9 +9,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data import PITDataPortal
 from src.domain import TradeStatus
-from src.engine.backtest_runner import BacktestConfig, BacktestRunner
+from src.engine.backtest_runner import BacktestConfig, BacktestRunner, CachedPITDataPortal
 from src.engine.execution import LimitRuleTable
 from src.market_calendar import trading_calendar_from_dates
 
@@ -39,7 +38,7 @@ def _run_fixture(*, mutate_after_cutoff: bool):
         pd.DataFrame(_corporate_action_rows(mutate_after_cutoff=mutate_after_cutoff)).to_parquet(ca_path, index=False)
 
         calendar = trading_calendar_from_dates(_TRADE_DATES)
-        portal = PITDataPortal(
+        portal = CachedPITDataPortal(
             {
                 "daily_bar_raw": daily_path,
                 "security_master": master_path,

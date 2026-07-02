@@ -541,22 +541,52 @@ class RunnerDummyRebalanceStrategy(DummyRebalanceStrategy):
 
 def _tradable_universe_by_date(portal: PITDataPortal) -> dict[date, list[str]]:
     if isinstance(portal, CachedPITDataPortal):
-        rows = portal.daily_rows()
+        rows = portal.daily_rows().copy()
     else:
         rows = portal.query(
             "daily_bar_raw",
             _market_close_asof(DEFAULT_END_DATE),
-            columns=["security_id", "trade_date", "trade_status"],
+            columns=["security_id", "trade_date", "trade_status", "event_ts", "available_at"],
         )
         rows = rows.copy()
         rows["_trade_date_date"] = pd.to_datetime(rows["trade_date"], errors="raise").dt.date
         rows["_security_id_norm"] = rows["security_id"].astype(str).str.zfill(6)
 
+    rows = _rows_visible_at_own_trade_date(rows)
     tradable = rows.loc[rows["trade_status"].astype(str) == TradeStatus.NORMAL.value].copy()
     result: dict[date, list[str]] = {}
     for trade_date, group in tradable.groupby("_trade_date_date"):
         result[trade_date] = sorted(group["_security_id_norm"].drop_duplicates().tolist())
     return result
+
+
+def _rows_visible_at_own_trade_date(rows: pd.DataFrame) -> pd.DataFrame:
+    filtered = rows.copy()
+    if "_trade_date_date" not in filtered.columns:
+        filtered["_trade_date_date"] = pd.to_datetime(
+            filtered["trade_date"],
+            errors="raise",
+        ).dt.date
+    if "_security_id_norm" not in filtered.columns:
+        filtered["_security_id_norm"] = filtered["security_id"].astype(str).str.zfill(6)
+
+    if "_available_at_parsed" in filtered.columns:
+        available_at = filtered["_available_at_parsed"]
+    else:
+        available_at = pd.to_datetime(filtered["available_at"], errors="raise")
+
+    trade_date_asof = pd.to_datetime(
+        filtered["_trade_date_date"].astype(str) + "T15:00:00+08:00",
+        errors="raise",
+    )
+    visible_mask = available_at.le(trade_date_asof)
+    if "event_ts" in filtered.columns or "_event_ts_parsed" in filtered.columns:
+        if "_event_ts_parsed" in filtered.columns:
+            event_ts = filtered["_event_ts_parsed"]
+        else:
+            event_ts = pd.to_datetime(filtered["event_ts"], errors="raise")
+        visible_mask = visible_mask & event_ts.le(trade_date_asof)
+    return filtered.loc[visible_mask].copy()
 
 
 def _drop_runner_helper_columns(rows: pd.DataFrame) -> pd.DataFrame:
