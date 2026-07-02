@@ -34,17 +34,89 @@ class PortfolioLedgerTest(unittest.TestCase):
         position = ledger.positions["000001"]
         self.assertEqual(ledger.cash.available_cash, Decimal("8994.99"))
         self.assertEqual(position.total_quantity, 100)
-        self.assertEqual(position.sellable_quantity, 100)
+        self.assertEqual(position.sellable_quantity, 0)
         self.assertEqual(position.locked_quantity, 0)
+        self.assertEqual(position.unsellable_quantity, 100)
         self.assertEqual(position.cost_basis, Decimal("1005.01"))
         self.assertEqual(len(position.lots), 1)
         self.assertEqual(position.lots[0].quantity, 100)
         self.assertEqual(position.lots[0].cost_basis, Decimal("1005.01"))
         self.assertEqual(position.lots[0].trade_date, date(2026, 6, 30))
         self.assertEqual(position.lots[0].sellable_from, date(2026, 7, 1))
+        self.assertFalse(position.lots[0].is_unlocked)
         self.assertEqual(position.lots[0].source, "BUY")
         self.assertEqual(entry.realized_pnl, Decimal("0.00"))
         self.assertEqual(len(ledger.ledger_entries), 1)
+        _assert_position_aggregates_are_lot_derived(self, position)
+
+    def test_ex004_same_day_buy_cannot_be_sold_until_next_trading_day_unlock(self) -> None:
+        ledger = _ledger(initial_cash=Decimal("10000.00"))
+        ledger.unlock_positions(date(2026, 6, 30))
+        ledger.apply_fill(
+            _fill(
+                security_id="000001",
+                side="buy",
+                quantity=100,
+                net_amount=Decimal("1005.01"),
+                execution_date=date(2026, 6, 30),
+            )
+        )
+
+        position = ledger.positions["000001"]
+        self.assertEqual(position.sellable_quantity, 0)
+        with self.assertRaises(InsufficientSellableQuantityError):
+            ledger.apply_fill(
+                _fill(
+                    security_id="000001",
+                    side="sell",
+                    quantity=100,
+                    net_amount=Decimal("990.00"),
+                    execution_date=date(2026, 6, 30),
+                )
+            )
+
+        ledger.unlock_positions(date(2026, 7, 1))
+
+        self.assertEqual(position.sellable_quantity, 100)
+        ledger.apply_fill(
+            _fill(
+                security_id="000001",
+                side="sell",
+                quantity=100,
+                net_amount=Decimal("990.00"),
+                execution_date=date(2026, 7, 1),
+            )
+        )
+        self.assertEqual(position.total_quantity, 0)
+
+    def test_unlock_positions_only_unlocks_due_lots(self) -> None:
+        ledger = _ledger(initial_cash=Decimal("0.00"))
+        ledger.positions["000001"] = PositionState(
+            "000001",
+            lots=[
+                PositionLot(
+                    quantity=100,
+                    cost_basis=Decimal("1000.00"),
+                    trade_date=date(2026, 6, 30),
+                    sellable_from=date(2026, 7, 1),
+                ),
+                PositionLot(
+                    quantity=200,
+                    cost_basis=Decimal("2200.00"),
+                    trade_date=date(2026, 7, 1),
+                    sellable_from=date(2026, 7, 2),
+                ),
+            ],
+        )
+
+        self.assertEqual(ledger.unlock_positions(date(2026, 7, 1)), 1)
+        position = ledger.positions["000001"]
+        self.assertEqual(position.sellable_quantity, 100)
+        self.assertEqual(position.unsellable_quantity, 200)
+
+        self.assertEqual(ledger.unlock_positions(date(2026, 7, 2)), 1)
+        self.assertEqual(position.sellable_quantity, 300)
+        self.assertEqual(position.unsellable_quantity, 0)
         _assert_position_aggregates_are_lot_derived(self, position)
 
     def test_sell_consumes_fifo_lots_and_records_realized_pnl(self) -> None:
@@ -57,12 +129,14 @@ class PortfolioLedgerTest(unittest.TestCase):
                     cost_basis=Decimal("1005.01"),
                     trade_date=date(2026, 6, 29),
                     sellable_from=date(2026, 6, 30),
+                    is_unlocked=True,
                 ),
                 PositionLot(
                     quantity=100,
                     cost_basis=Decimal("1205.01"),
                     trade_date=date(2026, 6, 30),
                     sellable_from=date(2026, 7, 1),
+                    is_unlocked=True,
                 ),
             ],
         )
@@ -98,7 +172,6 @@ class PortfolioLedgerTest(unittest.TestCase):
                     cost_basis=Decimal("1000.00"),
                     trade_date=date(2026, 6, 29),
                     sellable_from=date(2026, 6, 30),
-                    locked_quantity=100,
                 )
             ],
         )
@@ -119,6 +192,103 @@ class PortfolioLedgerTest(unittest.TestCase):
         self.assertEqual(ledger.cash, before_cash)
         self.assertEqual(ledger.positions, before_positions)
         self.assertEqual(ledger.ledger_entries, before_entries)
+
+    def test_sell_lock_prevents_reusing_the_same_inventory(self) -> None:
+        ledger = _ledger(initial_cash=Decimal("0.00"))
+        ledger.positions["000001"] = PositionState(
+            "000001",
+            lots=[
+                PositionLot(
+                    quantity=100,
+                    cost_basis=Decimal("1000.00"),
+                    trade_date=date(2026, 6, 29),
+                    sellable_from=date(2026, 6, 30),
+                    is_unlocked=True,
+                )
+            ],
+        )
+
+        entry = ledger.lock_for_sell("000001", 100, trade_date=date(2026, 6, 30))
+
+        position = ledger.positions["000001"]
+        self.assertEqual(entry.event_type, "SELL_LOCK")
+        self.assertEqual(entry.locked_quantity_delta, 100)
+        self.assertEqual(position.locked_quantity, 100)
+        self.assertEqual(position.sellable_quantity, 0)
+        with self.assertRaises(InsufficientSellableQuantityError):
+            ledger.lock_for_sell("000001", 1, trade_date=date(2026, 6, 30))
+        _assert_position_aggregates_are_lot_derived(self, position)
+
+    def test_filled_sell_consumes_locked_inventory(self) -> None:
+        ledger = _ledger(initial_cash=Decimal("0.00"))
+        ledger.positions["000001"] = PositionState(
+            "000001",
+            lots=[
+                PositionLot(
+                    quantity=100,
+                    cost_basis=Decimal("1000.00"),
+                    trade_date=date(2026, 6, 29),
+                    sellable_from=date(2026, 6, 30),
+                    is_unlocked=True,
+                )
+            ],
+        )
+        ledger.lock_for_sell("000001", 100, trade_date=date(2026, 6, 30))
+
+        fill_entry = ledger.apply_fill(
+            _fill(
+                security_id="000001",
+                side="sell",
+                quantity=100,
+                net_amount=Decimal("990.00"),
+                execution_date=date(2026, 7, 1),
+            )
+        )
+
+        position = ledger.positions["000001"]
+        self.assertEqual(position.total_quantity, 0)
+        self.assertEqual(position.locked_quantity, 0)
+        self.assertEqual(position.sellable_quantity, 0)
+        self.assertEqual(ledger.cash.available_cash, Decimal("990.00"))
+        self.assertEqual(fill_entry.realized_pnl, Decimal("-10.00"))
+        _assert_position_aggregates_are_lot_derived(self, position)
+
+    def test_rejected_or_suspended_sell_releases_locked_inventory(self) -> None:
+        for status in ("REJECTED", "SUSPENDED", "UNFILLED"):
+            with self.subTest(status=status):
+                ledger = _ledger(initial_cash=Decimal("0.00"))
+                ledger.positions["000001"] = PositionState(
+                    "000001",
+                    lots=[
+                        PositionLot(
+                            quantity=100,
+                            cost_basis=Decimal("1000.00"),
+                            trade_date=date(2026, 6, 29),
+                            sellable_from=date(2026, 6, 30),
+                            is_unlocked=True,
+                        )
+                    ],
+                )
+                ledger.lock_for_sell("000001", 100, trade_date=date(2026, 6, 30))
+                ledger.apply_fill(
+                    _fill(
+                        security_id="000001",
+                        side="sell",
+                        quantity=100,
+                        net_amount=Decimal("990.00"),
+                        status=status,
+                    )
+                )
+
+                release = ledger.release_lock(
+                    "000001", 100, trade_date=date(2026, 7, 1)
+                )
+
+                position = ledger.positions["000001"]
+                self.assertEqual(release.event_type, "SELL_LOCK_RELEASE")
+                self.assertEqual(position.locked_quantity, 0)
+                self.assertEqual(position.sellable_quantity, 100)
+                _assert_position_aggregates_are_lot_derived(self, position)
 
     def test_non_filled_entries_do_not_change_any_ledger_state(self) -> None:
         for status in ("REJECTED", "SUSPENDED", "UNFILLED"):
@@ -153,6 +323,8 @@ class PortfolioLedgerTest(unittest.TestCase):
         ]
 
         for fill in fills:
+            if fill.order_intent.side == "sell":
+                ledger.unlock_positions(fill.execution_date)
             ledger.apply_fill(fill)
             ledger.assert_invariants()
 
@@ -171,6 +343,7 @@ class PortfolioLedgerTest(unittest.TestCase):
                 execution_date=date(2026, 6, 30),
             )
         )
+        ledger.unlock_positions(date(2026, 7, 1))
         ledger.apply_fill(
             _fill(
                 security_id="000001",
@@ -243,7 +416,19 @@ def _assert_position_aggregates_are_lot_derived(
     )
     test_case.assertEqual(
         position.sellable_quantity,
-        sum(lot.quantity - lot.locked_quantity for lot in position.lots),
+        sum(
+            lot.quantity - lot.locked_quantity
+            for lot in position.lots
+            if lot.is_unlocked
+        ),
+    )
+    test_case.assertEqual(
+        position.unsellable_quantity,
+        sum(lot.quantity for lot in position.lots if not lot.is_unlocked),
+    )
+    test_case.assertEqual(
+        position.locked_quantity + position.sellable_quantity + position.unsellable_quantity,
+        position.total_quantity,
     )
     test_case.assertEqual(
         position.cost_basis,

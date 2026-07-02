@@ -11,7 +11,7 @@ from src.market_calendar import TradingCalendar
 
 MONEY_QUANT = Decimal("0.01")
 LotSource = Literal["BUY", "STOCK_DIVIDEND", "SPLIT", "TRANSFER"]
-PortfolioEventType = Literal["BUY_FILL", "SELL_FILL"]
+PortfolioEventType = Literal["BUY_FILL", "SELL_FILL", "SELL_LOCK", "SELL_LOCK_RELEASE"]
 
 
 class PortfolioLedgerError(ValueError):
@@ -20,6 +20,10 @@ class PortfolioLedgerError(ValueError):
 
 class InsufficientSellableQuantityError(PortfolioLedgerError):
     """Raised when a sell fill would consume more unlocked inventory than exists."""
+
+
+class InsufficientLockedQuantityError(PortfolioLedgerError):
+    """Raised when a lock release exceeds currently locked inventory."""
 
 
 @dataclass
@@ -44,6 +48,7 @@ class PositionLot:
     sellable_from: date
     source: LotSource = "BUY"
     locked_quantity: int = 0
+    is_unlocked: bool = False
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:
@@ -55,8 +60,14 @@ class PositionLot:
         object.__setattr__(self, "cost_basis", _money(self.cost_basis))
 
     @property
-    def unlocked_quantity(self) -> int:
+    def sellable_quantity(self) -> int:
+        if not self.is_unlocked:
+            return 0
         return self.quantity - self.locked_quantity
+
+    @property
+    def unsellable_quantity(self) -> int:
+        return 0 if self.is_unlocked else self.quantity
 
 
 @dataclass
@@ -77,8 +88,11 @@ class PositionState:
 
     @property
     def sellable_quantity(self) -> int:
-        # Phase 1 step 1 records sellable_from but does not enforce date-based unlock yet.
-        return sum(lot.unlocked_quantity for lot in self.lots)
+        return sum(lot.sellable_quantity for lot in self.lots)
+
+    @property
+    def unsellable_quantity(self) -> int:
+        return sum(lot.unsellable_quantity for lot in self.lots)
 
     @property
     def cost_basis(self) -> Decimal:
@@ -98,6 +112,7 @@ class PortfolioLedgerEntry:
     fill_reason: str
     position_quantity_after: int
     available_cash_after: Decimal
+    locked_quantity_delta: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "security_id", str(self.security_id).zfill(6))
@@ -129,22 +144,129 @@ class PortfolioLedger:
             return self._apply_sell(fill)
         raise PortfolioLedgerError(f"unsupported order side: {side}")
 
+    def unlock_positions(self, trade_date: date) -> int:
+        unlocked_count = 0
+        for position in self.positions.values():
+            updated_lots: list[PositionLot] = []
+            for lot in position.lots:
+                if not lot.is_unlocked and lot.sellable_from <= trade_date:
+                    updated_lots.append(replace(lot, is_unlocked=True))
+                    unlocked_count += 1
+                else:
+                    updated_lots.append(lot)
+            position.lots = updated_lots
+        self.assert_invariants()
+        return unlocked_count
+
+    def lock_for_sell(
+        self, security_id: str, quantity: int, trade_date: date | None = None
+    ) -> PortfolioLedgerEntry:
+        if quantity <= 0:
+            raise ValueError("quantity must be positive")
+        position = self._position(security_id)
+        if position.sellable_quantity < quantity:
+            raise InsufficientSellableQuantityError(
+                f"lock quantity {quantity} exceeds sellable quantity "
+                f"{position.sellable_quantity} for {position.security_id}"
+            )
+
+        remaining_to_lock = quantity
+        updated_lots: list[PositionLot] = []
+        for lot in position.lots:
+            if remaining_to_lock <= 0 or not lot.is_unlocked:
+                updated_lots.append(lot)
+                continue
+            lock_from_lot = min(lot.sellable_quantity, remaining_to_lock)
+            updated_lots.append(
+                replace(lot, locked_quantity=lot.locked_quantity + lock_from_lot)
+            )
+            remaining_to_lock -= lock_from_lot
+
+        if remaining_to_lock != 0:
+            raise AssertionError("lock called without enough sellable inventory")
+
+        position.lots = updated_lots
+        entry = self._append_entry(
+            event_type="SELL_LOCK",
+            security_id=position.security_id,
+            trade_date=date.min if trade_date is None else trade_date,
+            quantity_delta=0,
+            cash_delta=Decimal("0.00"),
+            cost_basis_delta=Decimal("0.00"),
+            realized_pnl=Decimal("0.00"),
+            fill_reason="SELL_INVENTORY_LOCKED",
+            position=position,
+            locked_quantity_delta=quantity,
+        )
+        self.assert_invariants()
+        return entry
+
+    def release_lock(
+        self, security_id: str, quantity: int, trade_date: date | None = None
+    ) -> PortfolioLedgerEntry:
+        if quantity <= 0:
+            raise ValueError("quantity must be positive")
+        position = self._position(security_id)
+        if position.locked_quantity < quantity:
+            raise InsufficientLockedQuantityError(
+                f"release quantity {quantity} exceeds locked quantity "
+                f"{position.locked_quantity} for {position.security_id}"
+            )
+
+        remaining_to_release = quantity
+        updated_lots: list[PositionLot] = []
+        for lot in position.lots:
+            if remaining_to_release <= 0 or lot.locked_quantity == 0:
+                updated_lots.append(lot)
+                continue
+            release_from_lot = min(lot.locked_quantity, remaining_to_release)
+            updated_lots.append(
+                replace(lot, locked_quantity=lot.locked_quantity - release_from_lot)
+            )
+            remaining_to_release -= release_from_lot
+
+        if remaining_to_release != 0:
+            raise AssertionError("release called without enough locked inventory")
+
+        position.lots = updated_lots
+        entry = self._append_entry(
+            event_type="SELL_LOCK_RELEASE",
+            security_id=position.security_id,
+            trade_date=date.min if trade_date is None else trade_date,
+            quantity_delta=0,
+            cash_delta=Decimal("0.00"),
+            cost_basis_delta=Decimal("0.00"),
+            realized_pnl=Decimal("0.00"),
+            fill_reason="SELL_INVENTORY_LOCK_RELEASED",
+            position=position,
+            locked_quantity_delta=-quantity,
+        )
+        self.assert_invariants()
+        return entry
+
     def assert_invariants(self) -> None:
         for security_id, position in self.positions.items():
             if security_id != position.security_id:
                 raise AssertionError("position key must match security_id")
             derived_total = sum(lot.quantity for lot in position.lots)
             derived_locked = sum(lot.locked_quantity for lot in position.lots)
-            derived_sellable = sum(lot.unlocked_quantity for lot in position.lots)
+            derived_sellable = sum(lot.sellable_quantity for lot in position.lots)
+            derived_unsellable = sum(lot.unsellable_quantity for lot in position.lots)
             derived_cost = _money(
                 sum((lot.cost_basis for lot in position.lots), Decimal("0.00"))
             )
+            if derived_locked + derived_sellable + derived_unsellable != derived_total:
+                raise AssertionError(
+                    "locked + sellable + unsellable must equal total quantity"
+                )
             if position.total_quantity != derived_total:
                 raise AssertionError("total_quantity invariant failed")
             if position.locked_quantity != derived_locked:
                 raise AssertionError("locked_quantity invariant failed")
             if position.sellable_quantity != derived_sellable:
                 raise AssertionError("sellable_quantity invariant failed")
+            if position.unsellable_quantity != derived_unsellable:
+                raise AssertionError("unsellable_quantity invariant failed")
             if position.cost_basis != derived_cost:
                 raise AssertionError("cost_basis invariant failed")
 
@@ -182,10 +304,11 @@ class PortfolioLedger:
         trade_date = _require_execution_date(fill)
         position = self._position(security_id)
         quantity = fill.filled_quantity
-        if position.sellable_quantity < quantity:
+        unlocked_capacity = position.locked_quantity + position.sellable_quantity
+        if unlocked_capacity < quantity:
             raise InsufficientSellableQuantityError(
-                f"sell quantity {quantity} exceeds sellable quantity "
-                f"{position.sellable_quantity} for {security_id}"
+                f"sell quantity {quantity} exceeds unlocked quantity "
+                f"{unlocked_capacity} for {security_id}"
             )
 
         consumed_cost, remaining_lots = _consume_fifo(position.lots, quantity)
@@ -226,6 +349,7 @@ class PortfolioLedger:
         realized_pnl: Decimal,
         fill_reason: str,
         position: PositionState,
+        locked_quantity_delta: int = 0,
     ) -> PortfolioLedgerEntry:
         entry = PortfolioLedgerEntry(
             event_id=len(self.ledger_entries) + 1,
@@ -239,6 +363,7 @@ class PortfolioLedger:
             fill_reason=fill_reason,
             position_quantity_after=position.total_quantity,
             available_cash_after=self.cash.available_cash,
+            locked_quantity_delta=locked_quantity_delta,
         )
         self.ledger_entries.append(entry)
         return entry
@@ -250,6 +375,23 @@ class PortfolioLedger:
 
 
 def _consume_fifo(lots: list[PositionLot], quantity: int) -> tuple[Decimal, list[PositionLot]]:
+    locked_cost, lots_after_locked, remaining_to_sell = _consume_fifo_pass(
+        lots, quantity, consume_locked=True
+    )
+    sellable_cost, remaining_lots, remaining_to_sell = _consume_fifo_pass(
+        lots_after_locked, remaining_to_sell, consume_locked=False
+    )
+    if remaining_to_sell != 0:
+        raise AssertionError("FIFO consume called without enough sellable inventory")
+    return _money(locked_cost + sellable_cost), remaining_lots
+
+
+def _consume_fifo_pass(
+    lots: list[PositionLot],
+    quantity: int,
+    *,
+    consume_locked: bool,
+) -> tuple[Decimal, list[PositionLot], int]:
     remaining_to_sell = quantity
     consumed_cost = Decimal("0.00")
     remaining_lots: list[PositionLot] = []
@@ -259,35 +401,39 @@ def _consume_fifo(lots: list[PositionLot], quantity: int) -> tuple[Decimal, list
             remaining_lots.append(lot)
             continue
 
-        sellable_from_lot = min(lot.unlocked_quantity, remaining_to_sell)
-        if sellable_from_lot <= 0:
+        available_from_lot = (
+            lot.locked_quantity if consume_locked else lot.sellable_quantity
+        )
+        sell_from_lot = min(available_from_lot, remaining_to_sell)
+        if sell_from_lot <= 0:
             remaining_lots.append(lot)
             continue
 
-        if sellable_from_lot == lot.quantity:
-            lot_cost = lot.cost_basis
-        else:
-            lot_cost = _money(
-                lot.cost_basis
-                * Decimal(sellable_from_lot)
-                / Decimal(lot.quantity)
-            )
+        lot_cost = _lot_cost_for_quantity(lot, sell_from_lot)
         consumed_cost = _money(consumed_cost + lot_cost)
-        remaining_to_sell -= sellable_from_lot
+        remaining_to_sell -= sell_from_lot
 
-        quantity_left = lot.quantity - sellable_from_lot
+        quantity_left = lot.quantity - sell_from_lot
         if quantity_left > 0:
+            locked_quantity_left = lot.locked_quantity
+            if consume_locked:
+                locked_quantity_left -= sell_from_lot
             remaining_lots.append(
                 replace(
                     lot,
                     quantity=quantity_left,
                     cost_basis=_money(lot.cost_basis - lot_cost),
+                    locked_quantity=locked_quantity_left,
                 )
             )
 
-    if remaining_to_sell != 0:
-        raise AssertionError("FIFO consume called without enough sellable inventory")
-    return consumed_cost, remaining_lots
+    return consumed_cost, remaining_lots, remaining_to_sell
+
+
+def _lot_cost_for_quantity(lot: PositionLot, quantity: int) -> Decimal:
+    if quantity == lot.quantity:
+        return lot.cost_basis
+    return _money(lot.cost_basis * Decimal(quantity) / Decimal(lot.quantity))
 
 
 def _require_execution_date(fill: FillLedgerEntry) -> date:
