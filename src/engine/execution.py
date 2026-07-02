@@ -10,7 +10,7 @@ import pandas as pd
 
 from src.market_calendar import TradingCalendar
 from src.data import PITDataPortal
-from src.domain import TradeStatus
+from src.domain import DataContractError, TradeStatus
 from src.engine.dummy_strategy import OrderIntent
 
 if TYPE_CHECKING:
@@ -38,6 +38,8 @@ LimitCheck = Literal[
     "EXEMPT_NEW_LISTING",
 ]
 LotSizePolicy = Literal["ROUND_DOWN", "REJECT"]
+CapacityReason = Literal["NONE", "CAPACITY_CAPPED"]
+ADVWindowStatus = Literal["NOT_EVALUATED", "ADV_FULL_WINDOW", "ADV_PARTIAL_WINDOW"]
 NewListingLimitPolicy = Literal[
     "DAILY_LIMIT_FROM_LISTING",
     "FIRST_DAY_ASYMMETRIC",
@@ -68,6 +70,9 @@ class FillLedgerEntry:
     total_fee: Decimal = Decimal("0.00")
     net_amount: Decimal = Decimal("0.00")
     reserved_cash: Decimal = Decimal("0.00")
+    original_quantity: int = 0
+    capacity_reason: CapacityReason = "NONE"
+    adv_window_status: ADVWindowStatus = "NOT_EVALUATED"
 
 
 @dataclass(frozen=True)
@@ -164,6 +169,7 @@ class LimitRuleTable:
 class LockedOrder:
     order_intent: OrderIntent
     locked_quantity: int
+    original_quantity: int
     reference_price: Decimal | None
     price_cap: Decimal | None
     price_floor: Decimal | None
@@ -172,10 +178,16 @@ class LockedOrder:
     ruleset_version: str
     ttl: OrderTTL = "NEXT_OPEN_ONLY"
     limit_check: LimitCheck = "NOT_EVALUATED"
+    capacity_reason: CapacityReason = "NONE"
+    adv_window_status: ADVWindowStatus = "NOT_EVALUATED"
+    trailing_adv_notional: Decimal | None = None
+    max_order_notional: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.locked_quantity < 0:
             raise ValueError("locked_quantity cannot be negative")
+        if self.original_quantity <= 0:
+            raise ValueError("original_quantity must be positive")
         object.__setattr__(
             self,
             "reference_price",
@@ -192,6 +204,18 @@ class LockedOrder:
             None if self.price_floor is None else _money(self.price_floor),
         )
         object.__setattr__(self, "reserved_cash", _money(self.reserved_cash))
+        object.__setattr__(
+            self,
+            "trailing_adv_notional",
+            None
+            if self.trailing_adv_notional is None
+            else _money(self.trailing_adv_notional),
+        )
+        object.__setattr__(
+            self,
+            "max_order_notional",
+            None if self.max_order_notional is None else _money(self.max_order_notional),
+        )
 
 
 @dataclass(frozen=True)
@@ -265,6 +289,18 @@ class T1OpenExecutor:
     fee_schedule: FeeSchedule = field(default_factory=FeeSchedule)
     limit_rule_table: LimitRuleTable = field(default_factory=LimitRuleTable)
     lot_size_policy: LotSizePolicy = "ROUND_DOWN"
+    # 来自规范V3订正第5条: 开盘成交不得用全日ADV, 须显著折扣;
+    # 该系数须进入敏感性分析。
+    opening_liquidity_fraction: Decimal = Decimal("0.05")
+    # 来自规范V3订正第5条: 开盘成交不得用全日ADV, 须显著折扣;
+    # 该窗口须与开盘流动性折扣一起进入敏感性分析。
+    trailing_adv_days: int = 20
+
+    def __post_init__(self) -> None:
+        if self.opening_liquidity_fraction <= Decimal("0"):
+            raise ValueError("opening_liquidity_fraction must be positive")
+        if self.trailing_adv_days <= 0:
+            raise ValueError("trailing_adv_days must be positive")
 
     def lock_order(
         self,
@@ -318,6 +354,43 @@ class T1OpenExecutor:
                         price_floor = _money(Decimal(str(limit_down)))
                         limit_check = "APPLIED"
 
+        capacity_reason: CapacityReason = "NONE"
+        adv_window_status: ADVWindowStatus = "NOT_EVALUATED"
+        trailing_adv_notional: Decimal | None = None
+        max_order_notional: Decimal | None = None
+        if locked_quantity > 0 and reference is not None:
+            capacity = self._capacity_limit(
+                order_intent.security_id,
+                order_intent.decision_date,
+            )
+            if capacity is None:
+                return _rejected(
+                    order_intent,
+                    None,
+                    None,
+                    "CAPACITY_NO_ADV_DATA",
+                    requested_quantity=order_intent.quantity,
+                )
+            trailing_adv_notional = capacity.trailing_adv_notional
+            max_order_notional = capacity.max_order_notional
+            adv_window_status = capacity.adv_window_status
+            order_notional = _money(reference * Decimal(locked_quantity))
+            if order_notional > max_order_notional:
+                capped_quantity = _round_quantity_for_capacity(
+                    int(max_order_notional / reference)
+                )
+                if capped_quantity <= 0:
+                    return _rejected(
+                        order_intent,
+                        None,
+                        None,
+                        "CAPACITY_REJECTED",
+                        requested_quantity=order_intent.quantity,
+                        adv_window_status=adv_window_status,
+                    )
+                locked_quantity = min(locked_quantity, capped_quantity)
+                capacity_reason = "CAPACITY_CAPPED"
+
         reserved_cash = Decimal("0.00")
         if order_intent.side == "buy" and locked_quantity > 0:
             reservation_price = price_cap or reference
@@ -344,6 +417,7 @@ class T1OpenExecutor:
         return LockedOrder(
             order_intent=order_intent,
             locked_quantity=locked_quantity,
+            original_quantity=order_intent.quantity,
             reference_price=reference,
             price_cap=price_cap,
             price_floor=price_floor,
@@ -352,6 +426,10 @@ class T1OpenExecutor:
             ruleset_version=self.limit_rule_table.version,
             ttl="NEXT_OPEN_ONLY",
             limit_check=limit_check,
+            capacity_reason=capacity_reason,
+            adv_window_status=adv_window_status,
+            trailing_adv_notional=trailing_adv_notional,
+            max_order_notional=max_order_notional,
         )
 
     def execute(self, orders: list[LockedOrder | OrderIntent]) -> list[FillLedgerEntry]:
@@ -413,11 +491,31 @@ class T1OpenExecutor:
 
         execution_bar = self._execution_bar(order_intent.security_id, next_session)
         if execution_bar is None:
-            return _unfilled(order_intent, next_session, "NO_OPEN_PRICE", locked_order.reserved_cash)
+            return _unfilled(
+                order_intent,
+                next_session,
+                "NO_OPEN_PRICE",
+                locked_order.reserved_cash,
+                capacity_reason=locked_order.capacity_reason,
+                adv_window_status=locked_order.adv_window_status,
+            )
         if execution_bar.trade_status == TradeStatus.SUSPENDED.value:
-            return _suspended(order_intent, next_session, locked_order.reserved_cash)
+            return _suspended(
+                order_intent,
+                next_session,
+                locked_order.reserved_cash,
+                capacity_reason=locked_order.capacity_reason,
+                adv_window_status=locked_order.adv_window_status,
+            )
         if execution_bar.open_price is None:
-            return _unfilled(order_intent, next_session, "NO_OPEN_PRICE", locked_order.reserved_cash)
+            return _unfilled(
+                order_intent,
+                next_session,
+                "NO_OPEN_PRICE",
+                locked_order.reserved_cash,
+                capacity_reason=locked_order.capacity_reason,
+                adv_window_status=locked_order.adv_window_status,
+            )
 
         limit_evaluation = self._limit_evaluation(locked_order, execution_bar.open_price)
         if limit_evaluation.rejection_reason is not None:
@@ -429,6 +527,8 @@ class T1OpenExecutor:
                 requested_quantity=order_intent.quantity,
                 limit_check=limit_evaluation.limit_check,
                 reserved_cash=locked_order.reserved_cash,
+                capacity_reason=locked_order.capacity_reason,
+                adv_window_status=locked_order.adv_window_status,
             )
 
         fees = self.fee_schedule.calculate(
@@ -454,6 +554,9 @@ class T1OpenExecutor:
             total_fee=fees.total_fee,
             net_amount=fees.net_amount,
             reserved_cash=locked_order.reserved_cash,
+            original_quantity=locked_order.original_quantity,
+            capacity_reason=locked_order.capacity_reason,
+            adv_window_status=locked_order.adv_window_status,
         )
 
     def _ensure_locked_order(self, order: LockedOrder | OrderIntent) -> LockedOrder | FillLedgerEntry:
@@ -548,6 +651,63 @@ class T1OpenExecutor:
         close_value = close_rows.sort_values("_trade_date", ascending=False).iloc[0]["close"]
         return float(close_value)
 
+    def _capacity_limit(
+        self,
+        security_id: str,
+        intent_date: date,
+    ) -> "_CapacityLimit | None":
+        try:
+            rows = self.portal.query(
+                "daily_bar_raw",
+                _daily_bar_asof(intent_date),
+                security_ids=[security_id],
+                columns=["security_id", "trade_date", "amount"],
+            )
+        except DataContractError:
+            return None
+        if rows.empty:
+            return None
+
+        trade_dates = pd.to_datetime(rows["trade_date"], errors="raise").dt.date
+        lookback_dates = [
+            trade_date
+            for trade_date in self.calendar.trade_dates
+            if trade_date <= intent_date
+        ][-self.trailing_adv_days :]
+        amount_rows = rows.loc[trade_dates.isin(lookback_dates)].copy()
+        amount_rows = amount_rows.loc[amount_rows["amount"].notna()].copy()
+        if amount_rows.empty:
+            return None
+
+        amount_rows["_trade_date"] = pd.to_datetime(amount_rows["trade_date"], errors="raise")
+        trailing_rows = amount_rows.sort_values("_trade_date", ascending=False).head(
+            self.trailing_adv_days
+        )
+        amounts = [
+            Decimal(str(amount))
+            for amount in trailing_rows["amount"].tolist()
+            if Decimal(str(amount)) >= Decimal("0")
+        ]
+        if not amounts:
+            return None
+
+        trailing_adv_notional = _money(
+            sum(amounts, Decimal("0.00")) / Decimal(len(amounts))
+        )
+        max_order_notional = _money(
+            trailing_adv_notional * self.opening_liquidity_fraction
+        )
+        adv_window_status: ADVWindowStatus = (
+            "ADV_FULL_WINDOW"
+            if len(amounts) >= self.trailing_adv_days
+            else "ADV_PARTIAL_WINDOW"
+        )
+        return _CapacityLimit(
+            trailing_adv_notional=trailing_adv_notional,
+            max_order_notional=max_order_notional,
+            adv_window_status=adv_window_status,
+        )
+
     def _security_master(self, security_id: str, execution_date: date) -> "_SecurityMasterView | None":
         rows = self.portal.query(
             "security_master",
@@ -592,11 +752,17 @@ def _money(value: Decimal) -> Decimal:
     return value.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
 
 
+def _round_quantity_for_capacity(quantity: int) -> int:
+    return (quantity // 100) * 100
+
+
 def _unfilled(
     order_intent: OrderIntent,
     execution_date: date | None,
     reason: str,
     reserved_cash: Decimal = Decimal("0.00"),
+    capacity_reason: CapacityReason = "NONE",
+    adv_window_status: ADVWindowStatus = "NOT_EVALUATED",
 ) -> FillLedgerEntry:
     return FillLedgerEntry(
         order_intent=order_intent,
@@ -608,6 +774,9 @@ def _unfilled(
         reason=reason,
         requested_quantity=order_intent.quantity,
         reserved_cash=reserved_cash,
+        original_quantity=order_intent.quantity,
+        capacity_reason=capacity_reason,
+        adv_window_status=adv_window_status,
     )
 
 
@@ -619,6 +788,8 @@ def _rejected(
     requested_quantity: int | None = None,
     limit_check: LimitCheck = "NOT_EVALUATED",
     reserved_cash: Decimal = Decimal("0.00"),
+    capacity_reason: CapacityReason = "NONE",
+    adv_window_status: ADVWindowStatus = "NOT_EVALUATED",
 ) -> FillLedgerEntry:
     return FillLedgerEntry(
         order_intent=order_intent,
@@ -631,6 +802,9 @@ def _rejected(
         requested_quantity=order_intent.quantity if requested_quantity is None else requested_quantity,
         limit_check=limit_check,
         reserved_cash=reserved_cash,
+        original_quantity=order_intent.quantity,
+        capacity_reason=capacity_reason,
+        adv_window_status=adv_window_status,
     )
 
 
@@ -638,6 +812,8 @@ def _suspended(
     order_intent: OrderIntent,
     execution_date: date,
     reserved_cash: Decimal = Decimal("0.00"),
+    capacity_reason: CapacityReason = "NONE",
+    adv_window_status: ADVWindowStatus = "NOT_EVALUATED",
 ) -> FillLedgerEntry:
     return FillLedgerEntry(
         order_intent=order_intent,
@@ -649,6 +825,9 @@ def _suspended(
         reason="NO_TRADE_SUSPENDED",
         requested_quantity=order_intent.quantity,
         reserved_cash=reserved_cash,
+        original_quantity=order_intent.quantity,
+        capacity_reason=capacity_reason,
+        adv_window_status=adv_window_status,
     )
 
 
@@ -668,6 +847,13 @@ class _LimitEvaluation:
 class _SecurityMasterView:
     board: str
     list_date: date
+
+
+@dataclass(frozen=True)
+class _CapacityLimit:
+    trailing_adv_notional: Decimal
+    max_order_notional: Decimal
+    adv_window_status: ADVWindowStatus
 
 
 def _limit_prices(previous_close: float, limit_rate: Decimal) -> tuple[float, float]:

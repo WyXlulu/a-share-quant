@@ -203,6 +203,7 @@ def _bar_row(
         "low": open_price,
         "close": close,
         "volume": 999999,
+        "amount": 100000000.0,
         "trade_status": trade_status,
         "event_ts": f"{trade_date}T15:00:00+08:00",
         "available_at": f"{trade_date}T15:00:00+08:00",
