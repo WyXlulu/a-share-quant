@@ -28,7 +28,7 @@ MAX_ATTEMPTS = 2
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 EXPLORATORY_TAINTED = "EXPLORATORY_TAINTED"
-POINT_IN_TIME_CAPABILITY = "EX_DATE_CLOSE_BEST_EFFORT"
+POINT_IN_TIME_CAPABILITY = "ANNOUNCEMENT_DATE_CLOSE_BEST_EFFORT"
 
 REQUIRED_COLUMNS = [
     "security_id",
@@ -86,10 +86,18 @@ def _fetch_symbol_with_retries(symbol: str) -> tuple[pd.DataFrame, str, list[str
 
 def _attach_pit_columns(frame: pd.DataFrame, revision_id: str) -> pd.DataFrame:
     actions = frame.copy()
-    ex_dates = pd.to_datetime(actions["ex_date"], errors="raise")
-    actions["ex_date"] = ex_dates.dt.tz_localize(SHANGHAI_TZ)
+    ex_dates = pd.to_datetime(actions["ex_date"], errors="raise").dt.date
+    if "announcement_date" in actions.columns:
+        announcement_dates = pd.to_datetime(actions["announcement_date"], errors="coerce").dt.date
+    else:
+        announcement_dates = pd.Series(pd.NaT, index=actions.index)
+
+    available_dates = announcement_dates.where(announcement_dates.notna(), ex_dates)
+    actions["ex_date"] = pd.to_datetime(ex_dates, errors="raise").dt.tz_localize(SHANGHAI_TZ)
     actions["event_ts"] = actions["ex_date"] + pd.Timedelta(hours=15)
-    actions["available_at"] = actions["event_ts"]
+    actions["available_at"] = pd.to_datetime(available_dates, errors="raise").dt.tz_localize(
+        SHANGHAI_TZ
+    ) + pd.Timedelta(hours=15)
     actions["snapshot_id"] = SNAPSHOT_ID
     actions["revision_id"] = revision_id
     actions["point_in_time_capability"] = POINT_IN_TIME_CAPABILITY
@@ -101,6 +109,52 @@ def _attach_pit_columns(frame: pd.DataFrame, revision_id: str) -> pd.DataFrame:
             actions[column] = values.mask(values.eq("NaT"))
 
     return actions.sort_values(["security_id", "ex_date", "action_type"]).reset_index(drop=True)
+
+
+def _availability_diagnostics(actions: pd.DataFrame) -> dict[str, object]:
+    if actions.empty:
+        return {
+            "announcement_date_non_null_count": 0,
+            "announcement_date_non_null_ratio": 0.0,
+            "available_at_fallback_to_ex_date_count": 0,
+            "ex_date_minus_announcement_date_days_min": None,
+            "ex_date_minus_announcement_date_days_max": None,
+            "zero_day_lag_count": 0,
+            "zero_day_lag_security_ids": [],
+            "zero_day_lag_known_limitation": (
+                "No zero-day announcement records in this snapshot."
+            ),
+        }
+
+    ex_dates = pd.to_datetime(actions["ex_date"], errors="raise").dt.date
+    announcement_dates = pd.to_datetime(actions["announcement_date"], errors="coerce").dt.date
+    announcement_present = announcement_dates.notna()
+    diffs = pd.Series(
+        [
+            (ex_date - announcement_date).days if pd.notna(announcement_date) else None
+            for ex_date, announcement_date in zip(ex_dates, announcement_dates)
+        ],
+        index=actions.index,
+        dtype="object",
+    )
+    valid_diffs = diffs.dropna().astype(int)
+    zero_day = valid_diffs.eq(0)
+    zero_day_security_ids = sorted(
+        actions.loc[zero_day[zero_day].index, "security_id"].astype(str).str.zfill(6).unique().tolist()
+    )
+    return {
+        "announcement_date_non_null_count": int(announcement_present.sum()),
+        "announcement_date_non_null_ratio": float(announcement_present.mean()),
+        "available_at_fallback_to_ex_date_count": int((~announcement_present).sum()),
+        "ex_date_minus_announcement_date_days_min": int(valid_diffs.min()) if not valid_diffs.empty else None,
+        "ex_date_minus_announcement_date_days_max": int(valid_diffs.max()) if not valid_diffs.empty else None,
+        "zero_day_lag_count": int(zero_day.sum()),
+        "zero_day_lag_security_ids": zero_day_security_ids,
+        "zero_day_lag_known_limitation": (
+            "Records announced on the ex-date use announcement-date 15:00 available_at; "
+            "they remain invisible at that ex-date open."
+        ),
+    }
 
 
 def _empty_output_frame() -> pd.DataFrame:
@@ -173,6 +227,7 @@ def build_corporate_actions() -> dict[str, object]:
 
     action_type_distribution = actions["action_type"].value_counts().sort_index().to_dict()
     source_distribution = actions["source_id"].value_counts().sort_index().to_dict()
+    availability_diagnostics = _availability_diagnostics(actions)
     manifest: dict[str, object] = {
         "manifest_version": 1,
         "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -203,10 +258,12 @@ def build_corporate_actions() -> dict[str, object]:
         "point_in_time_capability": {
             "level": POINT_IN_TIME_CAPABILITY,
             "available_at_semantics": (
-                "available_at is set to the ex_date close, 15:00 Asia/Shanghai. "
-                "The ex-date is a public event date, but exact disclosure and tradability "
-                "availability timestamps are not fully verified provider-by-provider."
+                "event_ts is set to the ex_date close, 15:00 Asia/Shanghai; "
+                "available_at is set to the announcement_date close, 15:00 Asia/Shanghai. "
+                "If announcement_date is missing, available_at defensively falls back to "
+                "the ex_date close and the fallback is counted in availability_diagnostics."
             ),
+            "availability_diagnostics": availability_diagnostics,
         },
         "best_effort_warning": (
             "This is a best-effort corporate action ledger. Completeness and accuracy have "

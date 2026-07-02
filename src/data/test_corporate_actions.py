@@ -39,6 +39,11 @@ class CorporateActionsContractTest(unittest.TestCase):
         self.assertIsNotNone(self.actions["available_at"].dt.tz)
         self.assertEqual(str(self.actions["available_at"].dt.tz), "Asia/Shanghai")
         self.assertEqual(self.manifest["evidence_level"], "EXPLORATORY_TAINTED")
+        diagnostics = self.manifest["point_in_time_capability"]["availability_diagnostics"]
+        self.assertEqual(diagnostics["announcement_date_non_null_ratio"], 1.0)
+        self.assertEqual(diagnostics["available_at_fallback_to_ex_date_count"], 0)
+        self.assertEqual(diagnostics["ex_date_minus_announcement_date_days_min"], 0)
+        self.assertEqual(diagnostics["ex_date_minus_announcement_date_days_max"], 17)
 
     def test_600519_has_historical_cash_dividends_classified_correctly(self) -> None:
         moutai = self.actions.loc[self.actions["security_id"].astype(str).eq("600519")].copy()
@@ -50,9 +55,7 @@ class CorporateActionsContractTest(unittest.TestCase):
         self.assertTrue(pure_cash_rows["action_type"].eq("CASH_DIVIDEND").all())
 
     def test_pit_portal_asof_filters_corporate_actions_available_at(self) -> None:
-        moutai = self.actions.loc[self.actions["security_id"].astype(str).eq("600519")].sort_values(
-            "available_at"
-        )
+        moutai = self.actions.loc[self.actions["security_id"].astype(str).eq("600519")].sort_values("available_at")
         target = moutai.iloc[0]
         before = target["available_at"] - pd.Timedelta(seconds=1)
         after = target["available_at"] + pd.Timedelta(seconds=1)
@@ -64,6 +67,35 @@ class CorporateActionsContractTest(unittest.TestCase):
         self.assertTrue(before_rows.empty)
         self.assertFalse(after_rows.empty)
         self.assertTrue(after_rows["available_at"].le(after).all())
+
+    def test_corporate_action_is_visible_after_announcement_before_ex_date(self) -> None:
+        actions = self.actions.copy()
+        announcement_dates = pd.to_datetime(actions["announcement_date"], errors="raise").dt.date
+        ex_dates = actions["ex_date"].dt.date
+        early_known = actions.loc[ex_dates > announcement_dates].sort_values(
+            ["security_id", "available_at"]
+        )
+        target = early_known.iloc[0]
+
+        after_announcement = target["available_at"] + pd.Timedelta(seconds=1)
+        before_ex_date = target["ex_date"] - pd.Timedelta(seconds=1)
+        portal = PITDataPortal({"corporate_actions": self.path})
+
+        visible = portal.query(
+            "corporate_actions",
+            after_announcement,
+            security_ids=[target["security_id"]],
+        )
+        still_before_ex_date = portal.query(
+            "corporate_actions",
+            before_ex_date,
+            security_ids=[target["security_id"]],
+        )
+
+        self.assertLess(after_announcement, target["ex_date"])
+        self.assertFalse(visible.empty)
+        self.assertIn(target["revision_id"], visible["revision_id"].tolist())
+        self.assertIn(target["revision_id"], still_before_ex_date["revision_id"].tolist())
 
 
 if __name__ == "__main__":

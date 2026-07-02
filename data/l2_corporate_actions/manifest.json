@@ -1,6 +1,6 @@
 {
   "manifest_version": 1,
-  "created_at": "2026-07-01T07:53:16+00:00",
+  "created_at": "2026-07-02T03:41:44+00:00",
   "snapshot_id": "20260630_corporate_actions_akshare",
   "output_path": "data/l2_corporate_actions/corporate_actions.parquet",
   "start_date": "2015-06-30",
@@ -33,8 +33,20 @@
   },
   "evidence_level": "EXPLORATORY_TAINTED",
   "point_in_time_capability": {
-    "level": "EX_DATE_CLOSE_BEST_EFFORT",
-    "available_at_semantics": "available_at is set to the ex_date close, 15:00 Asia/Shanghai. The ex-date is a public event date, but exact disclosure and tradability availability timestamps are not fully verified provider-by-provider."
+    "level": "ANNOUNCEMENT_DATE_CLOSE_BEST_EFFORT",
+    "available_at_semantics": "event_ts is set to the ex_date close, 15:00 Asia/Shanghai; available_at is set to the announcement_date close, 15:00 Asia/Shanghai. If announcement_date is missing, available_at defensively falls back to the ex_date close and the fallback is counted in availability_diagnostics.",
+    "availability_diagnostics": {
+      "announcement_date_non_null_count": 3075,
+      "announcement_date_non_null_ratio": 1.0,
+      "available_at_fallback_to_ex_date_count": 0,
+      "ex_date_minus_announcement_date_days_min": 0,
+      "ex_date_minus_announcement_date_days_max": 17,
+      "zero_day_lag_count": 1,
+      "zero_day_lag_security_ids": [
+        "601318"
+      ],
+      "zero_day_lag_known_limitation": "Records announced on the ex-date use announcement-date 15:00 available_at; they remain invisible at that ex-date open."
+    }
   },
   "best_effort_warning": "This is a best-effort corporate action ledger. Completeness and accuracy have not been manually verified event by event.",
   "coverage_gaps": {

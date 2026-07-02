@@ -232,6 +232,106 @@ class T1OpenExecutorTest(unittest.TestCase):
             self.assertNotEqual(fill.execution_price, 20.0)
             self.assertNotEqual(fill.execution_price, 15.0)
             self.assertEqual(fill.filled_quantity, 100)
+            self.assertEqual(fill.requested_quantity, 100)
+
+    def test_suspended_intent_day_uses_last_non_null_close_for_limit_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rows = [
+                _bar_row("000001", "2026-06-26", open_price=10.0, high=10.0, low=10.0, close=10.0),
+                _bar_row(
+                    "000001",
+                    "2026-06-29",
+                    open_price=None,
+                    high=None,
+                    low=None,
+                    close=None,
+                    trade_status=TradeStatus.SUSPENDED.value,
+                ),
+                _bar_row("000001", "2026-06-30", open_price=11.0, high=11.0, low=11.0, close=11.0),
+            ]
+            calendar = trading_calendar_from_dates(
+                [date(2026, 6, 26), date(2026, 6, 29), date(2026, 6, 30)]
+            )
+            portal = _portal(tmpdir, rows)
+            executor = T1OpenExecutor(calendar, portal, end_date=date(2026, 6, 30))
+
+            fill = executor.execute_one(_intent("000001", date(2026, 6, 29), side="buy"))
+
+            self.assertEqual(fill.status, "REJECTED")
+            self.assertEqual(fill.reason, "LIMIT_UP_NO_BUY")
+            self.assertEqual(fill.limit_check, "APPLIED")
+            self.assertEqual(fill.execution_price, 11.0)
+
+    def test_missing_previous_close_is_explicitly_marked_on_fill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(tmpdir, [_bar_row("000001", "2026-06-30", 10.0, 10.0, 10.0, 10.0)])
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+
+            fill = executor.execute_one(_intent("000001", date(2026, 6, 29), side="buy"))
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.limit_check, "SKIPPED_NO_PREV_CLOSE")
+
+    def test_missing_security_master_is_explicitly_marked_on_fill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(tmpdir, _fee_rows(), security_master_rows=[])
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+
+            fill = executor.execute_one(_intent("000001", date(2026, 6, 29), side="buy"))
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.limit_check, "SKIPPED_NO_MASTER")
+
+    def test_normal_fill_records_applied_limit_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(tmpdir, _fee_rows())
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+
+            fill = executor.execute_one(_intent("000001", date(2026, 6, 29), side="buy"))
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.limit_check, "APPLIED")
+
+    def test_buy_odd_lot_rounds_down_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(tmpdir, _fee_rows())
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+
+            fill = executor.execute_one(_intent("000001", date(2026, 6, 29), side="buy", quantity=150))
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.requested_quantity, 150)
+            self.assertEqual(fill.filled_quantity, 100)
+            self.assertEqual(fill.gross_amount, Decimal("1000.00"))
+
+    def test_buy_odd_lot_reject_policy_rejects_before_fill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(tmpdir, _fee_rows())
+            executor = T1OpenExecutor(
+                _calendar(),
+                portal,
+                end_date=date(2026, 6, 30),
+                lot_size_policy="REJECT",
+            )
+
+            fill = executor.execute_one(_intent("000001", date(2026, 6, 29), side="buy", quantity=150))
+
+            self.assertEqual(fill.status, "REJECTED")
+            self.assertEqual(fill.reason, "ODD_LOT_REJECTED")
+            self.assertEqual(fill.requested_quantity, 150)
+            self.assertEqual(fill.filled_quantity, 0)
+            self.assertEqual(fill.limit_check, "NOT_EVALUATED")
+
+    def test_buy_round_lot_quantity_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(tmpdir, _fee_rows())
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+
+            fill = executor.execute_one(_intent("000001", date(2026, 6, 29), side="buy", quantity=200))
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.requested_quantity, 200)
+            self.assertEqual(fill.filled_quantity, 200)
 
     def test_science_tech_board_uses_20pct_while_main_board_uses_10pct(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -433,7 +533,8 @@ def _portal(
     daily_path = Path(tmpdir) / "daily_bar_raw.parquet"
     security_master_path = Path(tmpdir) / "security_master.parquet"
     pd.DataFrame(rows).to_parquet(daily_path, index=False)
-    pd.DataFrame(security_master_rows or _default_security_master_rows()).to_parquet(
+    master_rows = _default_security_master_rows() if security_master_rows is None else security_master_rows
+    pd.DataFrame(master_rows, columns=["security_id", "board", "list_date", "available_at", "snapshot_id"]).to_parquet(
         security_master_path,
         index=False,
     )
