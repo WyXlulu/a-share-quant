@@ -159,3 +159,11 @@
 - **修复**：CA 台账改为 `event_ts=ex_date 15:00 Asia/Shanghai`、`available_at=announcement_date 15:00 Asia/Shanghai`，公告日缺失时 fallback 到 ex-date 并计数入 manifest；限价前收盘改为通过同一 PIT Portal 在 T 日 as-of 下向前回看 60 个交易日最近非空 close，并在 `FillLedgerEntry.limit_check` 记录 `APPLIED`、各类 `SKIPPED_*` 或 `EXEMPT_NEW_LISTING`；买单 lot size 在 `T1OpenExecutor` 成交前强制，默认 `ROUND_DOWN` 到 100 股整数倍，可配 `REJECT`，并用 `requested_quantity` 留存原始订单数量。卖单零股规则留待持仓账本步完整处理。
 - **验证**：CA manifest 记录 `announcement_date_non_null_count=3075`、fallback=0、领先区间 0-17 天，唯一 0 天差证券为 `601318`；CA Portal 测试已验证公告日 15:00 后、除权日前可见。限价四类测试覆盖停牌复牌向前取前收盘、无前收盘、无 master、正常 `APPLIED`；lot size 三类测试覆盖默认向下取整、`REJECT` 策略、整手不变。`.venv\Scripts\python.exe run_tests.py` 全量 `total=58, passed=58, skipped=0, failures=0, errors=0`。
 - **后续**：除权日限价参考价仍有 TODO，需在 CA 账本步接入公司行动调整后的参考价；本次 CA `available_at` 修复是该工作的前置解锁。
+
+## 2026-07-02 | EX-010 同轮次现金交互采用显式 broker adapter 规则
+
+- **决定**：同一 T+1 开盘轮次，broker adapter 执行顺序显式固定为先处理全部卖单、账本入账后再处理全部买单；卖出 `FILLED` 所释放的净额现金计入本轮买单可用现金。实盘对接时须逐字核对券商真实资金可用规则。
+- **保守选择**：T 日买单锁定阶段不预支未来卖出资金；现金可行性只看 T 日已有可用现金与既有冻结预留逻辑。即使同一决策日存在卖出意图，现金不足的买单也在 T 日锁定阶段返回 `CASH_INSUFFICIENT`，防止 T+1 卖单被拒、停牌或缺开盘价时买单超支。
+- **理由**：执行适配层需要模拟同一开盘批次内卖出成交后的现金释放，但锁定层必须保持 fail-closed，不能把尚未发生且可能失败的卖出视作确定现金。
+- **备选**：T 日锁定阶段允许用同日卖出意图预支现金（会把未来不确定成交前移成现金承诺，放弃）。
+---
