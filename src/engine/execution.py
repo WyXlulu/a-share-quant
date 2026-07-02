@@ -40,6 +40,11 @@ LimitCheck = Literal[
 LotSizePolicy = Literal["ROUND_DOWN", "REJECT"]
 CapacityReason = Literal["NONE", "CAPACITY_CAPPED"]
 ADVWindowStatus = Literal["NOT_EVALUATED", "ADV_FULL_WINDOW", "ADV_PARTIAL_WINDOW"]
+LimitReferenceStatus = Literal[
+    "NONE",
+    "LIMIT_REF_ADJUSTED_FOR_CA",
+    "LIMIT_REF_UNADJUSTED_CA_INVISIBLE",
+]
 NewListingLimitPolicy = Literal[
     "DAILY_LIMIT_FROM_LISTING",
     "FIRST_DAY_ASYMMETRIC",
@@ -73,6 +78,7 @@ class FillLedgerEntry:
     original_quantity: int = 0
     capacity_reason: CapacityReason = "NONE"
     adv_window_status: ADVWindowStatus = "NOT_EVALUATED"
+    limit_reference_status: LimitReferenceStatus = "NONE"
 
 
 @dataclass(frozen=True)
@@ -180,6 +186,7 @@ class LockedOrder:
     limit_check: LimitCheck = "NOT_EVALUATED"
     capacity_reason: CapacityReason = "NONE"
     adv_window_status: ADVWindowStatus = "NOT_EVALUATED"
+    limit_reference_status: LimitReferenceStatus = "NONE"
     trailing_adv_notional: Decimal | None = None
     max_order_notional: Decimal | None = None
 
@@ -324,6 +331,16 @@ class T1OpenExecutor:
             )
 
         reference = self._reference_price(order_intent.security_id, order_intent.decision_date)
+        limit_reference_status: LimitReferenceStatus = "NONE"
+        if reference is not None:
+            reference_context = self._limit_reference_context(
+                order_intent.security_id,
+                order_intent.decision_date,
+                next_session,
+                reference,
+            )
+            reference = reference_context.reference_price
+            limit_reference_status = reference_context.status
         limit_check = "NOT_EVALUATED"
         price_cap: Decimal | None = None
         price_floor: Decimal | None = None
@@ -428,6 +445,7 @@ class T1OpenExecutor:
             limit_check=limit_check,
             capacity_reason=capacity_reason,
             adv_window_status=adv_window_status,
+            limit_reference_status=limit_reference_status,
             trailing_adv_notional=trailing_adv_notional,
             max_order_notional=max_order_notional,
         )
@@ -498,6 +516,7 @@ class T1OpenExecutor:
                 locked_order.reserved_cash,
                 capacity_reason=locked_order.capacity_reason,
                 adv_window_status=locked_order.adv_window_status,
+                limit_reference_status=locked_order.limit_reference_status,
             )
         if execution_bar.trade_status == TradeStatus.SUSPENDED.value:
             return _suspended(
@@ -506,6 +525,7 @@ class T1OpenExecutor:
                 locked_order.reserved_cash,
                 capacity_reason=locked_order.capacity_reason,
                 adv_window_status=locked_order.adv_window_status,
+                limit_reference_status=locked_order.limit_reference_status,
             )
         if execution_bar.open_price is None:
             return _unfilled(
@@ -515,6 +535,7 @@ class T1OpenExecutor:
                 locked_order.reserved_cash,
                 capacity_reason=locked_order.capacity_reason,
                 adv_window_status=locked_order.adv_window_status,
+                limit_reference_status=locked_order.limit_reference_status,
             )
 
         limit_evaluation = self._limit_evaluation(locked_order, execution_bar.open_price)
@@ -529,6 +550,7 @@ class T1OpenExecutor:
                 reserved_cash=locked_order.reserved_cash,
                 capacity_reason=locked_order.capacity_reason,
                 adv_window_status=locked_order.adv_window_status,
+                limit_reference_status=locked_order.limit_reference_status,
             )
 
         fees = self.fee_schedule.calculate(
@@ -557,6 +579,7 @@ class T1OpenExecutor:
             original_quantity=locked_order.original_quantity,
             capacity_reason=locked_order.capacity_reason,
             adv_window_status=locked_order.adv_window_status,
+            limit_reference_status=locked_order.limit_reference_status,
         )
 
     def _ensure_locked_order(self, order: LockedOrder | OrderIntent) -> LockedOrder | FillLedgerEntry:
@@ -650,6 +673,75 @@ class T1OpenExecutor:
         close_rows["_trade_date"] = pd.to_datetime(close_rows["trade_date"], errors="raise")
         close_value = close_rows.sort_values("_trade_date", ascending=False).iloc[0]["close"]
         return float(close_value)
+
+    def _limit_reference_context(
+        self,
+        security_id: str,
+        intent_date: date,
+        execution_date: date,
+        previous_close: Decimal,
+    ) -> "_LimitReferenceContext":
+        visible_actions = self._corporate_actions_on_ex_date(
+            security_id,
+            intent_date,
+            execution_date,
+        )
+        if not visible_actions.empty:
+            cash_dividend, share_ratio = _corporate_action_adjustments(visible_actions)
+            adjusted_reference = _ex_right_reference_price(
+                previous_close,
+                cash_dividend,
+                share_ratio,
+            )
+            if adjusted_reference != previous_close:
+                return _LimitReferenceContext(
+                    reference_price=adjusted_reference,
+                    status="LIMIT_REF_ADJUSTED_FOR_CA",
+                )
+            return _LimitReferenceContext(reference_price=previous_close, status="NONE")
+
+        close_visible_actions = self._corporate_actions_on_ex_date(
+            security_id,
+            execution_date,
+            execution_date,
+        )
+        if not close_visible_actions.empty:
+            return _LimitReferenceContext(
+                reference_price=previous_close,
+                status="LIMIT_REF_UNADJUSTED_CA_INVISIBLE",
+            )
+        return _LimitReferenceContext(reference_price=previous_close, status="NONE")
+
+    def _corporate_actions_on_ex_date(
+        self,
+        security_id: str,
+        asof_date: date,
+        ex_date: date,
+    ) -> pd.DataFrame:
+        try:
+            rows = self.portal.query(
+                "corporate_actions",
+                _daily_bar_asof(asof_date),
+                security_ids=[security_id],
+                columns=[
+                    "security_id",
+                    "ex_date",
+                    "action_type",
+                    "cash_dividend_per_share",
+                    "share_ratio",
+                    "available_at",
+                ],
+            )
+        except DataContractError:
+            return pd.DataFrame()
+        if rows.empty:
+            return rows
+
+        ex_dates = pd.to_datetime(rows["ex_date"], errors="raise").dt.date
+        actions = rows.loc[ex_dates == ex_date].copy()
+        if actions.empty:
+            return actions
+        return _latest_corporate_action_rows(actions)
 
     def _capacity_limit(
         self,
@@ -763,6 +855,7 @@ def _unfilled(
     reserved_cash: Decimal = Decimal("0.00"),
     capacity_reason: CapacityReason = "NONE",
     adv_window_status: ADVWindowStatus = "NOT_EVALUATED",
+    limit_reference_status: LimitReferenceStatus = "NONE",
 ) -> FillLedgerEntry:
     return FillLedgerEntry(
         order_intent=order_intent,
@@ -777,6 +870,7 @@ def _unfilled(
         original_quantity=order_intent.quantity,
         capacity_reason=capacity_reason,
         adv_window_status=adv_window_status,
+        limit_reference_status=limit_reference_status,
     )
 
 
@@ -790,6 +884,7 @@ def _rejected(
     reserved_cash: Decimal = Decimal("0.00"),
     capacity_reason: CapacityReason = "NONE",
     adv_window_status: ADVWindowStatus = "NOT_EVALUATED",
+    limit_reference_status: LimitReferenceStatus = "NONE",
 ) -> FillLedgerEntry:
     return FillLedgerEntry(
         order_intent=order_intent,
@@ -805,6 +900,7 @@ def _rejected(
         original_quantity=order_intent.quantity,
         capacity_reason=capacity_reason,
         adv_window_status=adv_window_status,
+        limit_reference_status=limit_reference_status,
     )
 
 
@@ -814,6 +910,7 @@ def _suspended(
     reserved_cash: Decimal = Decimal("0.00"),
     capacity_reason: CapacityReason = "NONE",
     adv_window_status: ADVWindowStatus = "NOT_EVALUATED",
+    limit_reference_status: LimitReferenceStatus = "NONE",
 ) -> FillLedgerEntry:
     return FillLedgerEntry(
         order_intent=order_intent,
@@ -828,6 +925,7 @@ def _suspended(
         original_quantity=order_intent.quantity,
         capacity_reason=capacity_reason,
         adv_window_status=adv_window_status,
+        limit_reference_status=limit_reference_status,
     )
 
 
@@ -856,11 +954,57 @@ class _CapacityLimit:
     adv_window_status: ADVWindowStatus
 
 
+@dataclass(frozen=True)
+class _LimitReferenceContext:
+    reference_price: Decimal
+    status: LimitReferenceStatus
+
+
 def _limit_prices(previous_close: float, limit_rate: Decimal) -> tuple[float, float]:
     close = Decimal(str(previous_close))
     limit_up = (close * (Decimal("1") + limit_rate)).quantize(PRICE_TICK, rounding=ROUND_HALF_UP)
     limit_down = (close * (Decimal("1") - limit_rate)).quantize(PRICE_TICK, rounding=ROUND_HALF_UP)
     return float(limit_up), float(limit_down)
+
+
+def _ex_right_reference_price(
+    previous_close: Decimal,
+    cash_dividend_per_share: Decimal,
+    share_ratio: Decimal,
+) -> Decimal:
+    denominator = Decimal("1") + share_ratio
+    if denominator <= Decimal("0"):
+        return _money(previous_close - cash_dividend_per_share)
+    return _money((previous_close - cash_dividend_per_share) / denominator)
+
+
+def _corporate_action_adjustments(actions: pd.DataFrame) -> tuple[Decimal, Decimal]:
+    cash_dividend = Decimal("0.00")
+    share_ratio = Decimal("0.00")
+    for row in actions.itertuples(index=False):
+        action_type = str(getattr(row, "action_type"))
+        if action_type not in ("CASH_DIVIDEND", "STOCK_DIVIDEND"):
+            continue
+        cash_dividend += _decimal_or_zero(getattr(row, "cash_dividend_per_share"))
+        share_ratio += _decimal_or_zero(getattr(row, "share_ratio"))
+    return _money(cash_dividend), share_ratio
+
+
+def _latest_corporate_action_rows(actions: pd.DataFrame) -> pd.DataFrame:
+    actions = actions.copy()
+    actions["_available_at_sort"] = pd.to_datetime(actions["available_at"], errors="raise")
+    return (
+        actions.sort_values(["security_id", "ex_date", "action_type", "_available_at_sort"])
+        .drop_duplicates(["security_id", "ex_date", "action_type"], keep="last")
+        .drop(columns=["_available_at_sort"])
+        .reset_index(drop=True)
+    )
+
+
+def _decimal_or_zero(value: object) -> Decimal:
+    if pd.isna(value):
+        return Decimal("0")
+    return Decimal(str(value))
 
 
 def _asymmetric_limit_prices(

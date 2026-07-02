@@ -11,7 +11,7 @@ import pandas as pd
 from src.market_calendar import trading_calendar_from_dates
 from src.data import PITDataPortal
 from src.domain import TradeStatus
-from src.engine import FeeSchedule, FillLedgerEntry, OrderIntent, T1OpenExecutor
+from src.engine import FeeSchedule, FillLedgerEntry, LockedOrder, OrderIntent, T1OpenExecutor
 from src.engine.execution import FeeScheduleError
 
 
@@ -195,6 +195,148 @@ class T1OpenExecutorTest(unittest.TestCase):
             self.assertEqual(fill.execution_date, date(2026, 6, 30))
             self.assertEqual(fill.execution_price, 11.0)
             self.assertEqual(fill.filled_quantity, 0)
+
+    def test_ex_right_cash_dividend_limit_reference_uses_moutai_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            decision_date = date(2026, 6, 29)
+            ex_date = date(2026, 6, 30)
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("600519", "2026-06-29", open_price=1212.10, high=1212.10, low=1212.10, close=1212.10),
+                    _bar_row("600519", "2026-06-30", open_price=1302.49, high=1302.49, low=1302.49, close=1302.49),
+                ],
+                security_master_rows=[
+                    _security_master_row("600519", board="主板", list_date="2001-08-27"),
+                ],
+                corporate_action_rows=[
+                    _corporate_action_row(
+                        "600519",
+                        "2026-06-30",
+                        "CASH_DIVIDEND",
+                        cash_dividend_per_share=28.02,
+                        available_at="2026-06-29T15:00:00+08:00",
+                    )
+                ],
+            )
+            executor = T1OpenExecutor(_calendar(), portal, end_date=ex_date)
+            locked = executor.lock_order(
+                _intent("600519", decision_date, side="buy"),
+                available_cash=Decimal("200000.00"),
+            )
+
+            self.assertIsInstance(locked, LockedOrder)
+            self.assertEqual(locked.reference_price, Decimal("1184.08"))
+            self.assertEqual(locked.price_cap, Decimal("1302.49"))
+            self.assertEqual(locked.price_floor, Decimal("1065.67"))
+            self.assertEqual(locked.limit_reference_status, "LIMIT_REF_ADJUSTED_FOR_CA")
+
+            fill = executor.execute_one(locked)
+
+            self.assertEqual(fill.status, "REJECTED")
+            self.assertEqual(fill.reason, "LIMIT_UP_NO_BUY")
+            self.assertEqual(fill.execution_price, 1302.49)
+            self.assertEqual(fill.limit_reference_status, "LIMIT_REF_ADJUSTED_FOR_CA")
+
+    def test_ex_right_stock_dividend_limit_reference_uses_share_ratio(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("000001", "2026-06-29", open_price=10.0, high=10.0, low=10.0, close=10.0),
+                    _bar_row("000001", "2026-06-30", open_price=7.34, high=7.34, low=7.34, close=7.34),
+                ],
+                corporate_action_rows=[
+                    _corporate_action_row(
+                        "000001",
+                        "2026-06-30",
+                        "STOCK_DIVIDEND",
+                        share_ratio=0.5,
+                        available_at="2026-06-29T15:00:00+08:00",
+                    )
+                ],
+            )
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+            locked = executor.lock_order(
+                _intent("000001", date(2026, 6, 29), side="buy"),
+                available_cash=Decimal("2000.00"),
+            )
+
+            self.assertIsInstance(locked, LockedOrder)
+            self.assertEqual(locked.reference_price, Decimal("6.67"))
+            self.assertEqual(locked.price_cap, Decimal("7.34"))
+            self.assertEqual(locked.price_floor, Decimal("6.00"))
+            self.assertEqual(locked.limit_reference_status, "LIMIT_REF_ADJUSTED_FOR_CA")
+
+            fill = executor.execute_one(locked)
+
+            self.assertEqual(fill.status, "REJECTED")
+            self.assertEqual(fill.reason, "LIMIT_UP_NO_BUY")
+            self.assertEqual(fill.limit_reference_status, "LIMIT_REF_ADJUSTED_FOR_CA")
+
+    def test_non_ex_right_day_limit_reference_is_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("000001", "2026-06-29", open_price=10.0, high=10.0, low=10.0, close=10.0),
+                    _bar_row("000001", "2026-06-30", open_price=10.5, high=10.5, low=10.5, close=10.5),
+                ],
+                corporate_action_rows=[
+                    _corporate_action_row(
+                        "000001",
+                        "2026-07-01",
+                        "CASH_DIVIDEND",
+                        cash_dividend_per_share=1.0,
+                        available_at="2026-06-29T15:00:00+08:00",
+                    )
+                ],
+            )
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+            locked = executor.lock_order(
+                _intent("000001", date(2026, 6, 29), side="buy"),
+                available_cash=Decimal("2000.00"),
+            )
+
+            self.assertIsInstance(locked, LockedOrder)
+            self.assertEqual(locked.reference_price, Decimal("10.00"))
+            self.assertEqual(locked.price_cap, Decimal("11.00"))
+            self.assertEqual(locked.price_floor, Decimal("9.00"))
+            self.assertEqual(locked.limit_reference_status, "NONE")
+
+    def test_same_day_ca_invisible_at_lock_marks_unadjusted_limit_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("000001", "2026-06-29", open_price=10.0, high=10.0, low=10.0, close=10.0),
+                    _bar_row("000001", "2026-06-30", open_price=10.5, high=10.5, low=10.5, close=10.5),
+                ],
+                corporate_action_rows=[
+                    _corporate_action_row(
+                        "000001",
+                        "2026-06-30",
+                        "CASH_DIVIDEND",
+                        cash_dividend_per_share=1.0,
+                        available_at="2026-06-30T15:00:00+08:00",
+                    )
+                ],
+            )
+            executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+            locked = executor.lock_order(
+                _intent("000001", date(2026, 6, 29), side="buy"),
+                available_cash=Decimal("2000.00"),
+            )
+
+            self.assertIsInstance(locked, LockedOrder)
+            self.assertEqual(locked.reference_price, Decimal("10.00"))
+            self.assertEqual(locked.price_cap, Decimal("11.00"))
+            self.assertEqual(locked.limit_reference_status, "LIMIT_REF_UNADJUSTED_CA_INVISIBLE")
+
+            fill = executor.execute_one(locked)
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.limit_reference_status, "LIMIT_REF_UNADJUSTED_CA_INVISIBLE")
 
     def test_main_board_limit_down_rejects_sell_without_fill(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -529,6 +671,7 @@ def _portal(
     tmpdir: str,
     rows: list[dict[str, object]],
     security_master_rows: list[dict[str, object]] | None = None,
+    corporate_action_rows: list[dict[str, object]] | None = None,
 ) -> PITDataPortal:
     daily_path = Path(tmpdir) / "daily_bar_raw.parquet"
     security_master_path = Path(tmpdir) / "security_master.parquet"
@@ -538,7 +681,12 @@ def _portal(
         security_master_path,
         index=False,
     )
-    return PITDataPortal({"daily_bar_raw": daily_path, "security_master": security_master_path})
+    table_paths = {"daily_bar_raw": daily_path, "security_master": security_master_path}
+    if corporate_action_rows is not None:
+        corporate_actions_path = Path(tmpdir) / "corporate_actions.parquet"
+        pd.DataFrame(corporate_action_rows).to_parquet(corporate_actions_path, index=False)
+        table_paths["corporate_actions"] = corporate_actions_path
+    return PITDataPortal(table_paths)
 
 
 def _intent(
@@ -612,6 +760,28 @@ def _security_master_row(security_id: str, board: str, list_date: str) -> dict[s
         "board": board,
         "list_date": list_date,
         "available_at": f"{list_date}T15:00:00+08:00",
+        "snapshot_id": "fixture",
+    }
+
+
+def _corporate_action_row(
+    security_id: str,
+    ex_date: str,
+    action_type: str,
+    *,
+    cash_dividend_per_share: float = 0.0,
+    share_ratio: float = 0.0,
+    available_at: str,
+) -> dict[str, object]:
+    return {
+        "security_id": security_id,
+        "ex_date": f"{ex_date}T00:00:00+08:00",
+        "action_type": action_type,
+        "cash_dividend_per_share": cash_dividend_per_share,
+        "share_ratio": share_ratio,
+        "event_ts": f"{ex_date}T15:00:00+08:00",
+        "available_at": available_at,
+        "source_id": "fixture",
         "snapshot_id": "fixture",
     }
 
