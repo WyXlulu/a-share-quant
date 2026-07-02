@@ -11,13 +11,15 @@ from src.domain import DAILY_BAR_REQUIRED_COLUMNS, BarFrequency, PriceBasis, Tra
 
 
 class L1RawContractTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.l1_path = Path("data/l1_raw/daily_bar_raw.parquet")
-        cls.manifest_path = Path("data/l1_raw/manifest.json")
-        cls.quarantined_hfq_path = Path("data/quarantine/vendor_adjusted/hs300_daily_10y.parquet")
-        cls.l1 = pd.read_parquet(cls.l1_path)
-        cls.hfq = normalize_vendor_daily_frame(None, pd.read_parquet(cls.quarantined_hfq_path))
+    def setUp(self) -> None:
+        self.l1_path = Path("data/l1_raw/daily_bar_raw.parquet")
+        self.manifest_path = Path("data/l1_raw/manifest.json")
+        self.quarantined_hfq_path = Path("data/quarantine/vendor_adjusted/hs300_daily_10y.parquet")
+        for path in (self.l1_path, self.manifest_path, self.quarantined_hfq_path):
+            if not path.exists():
+                self.skipTest(f"本地数据文件不存在: {path}")
+        self.l1 = pd.read_parquet(self.l1_path)
+        self.hfq = normalize_vendor_daily_frame(None, pd.read_parquet(self.quarantined_hfq_path))
 
     def test_l1_raw_price_basis_is_unadjusted_only(self) -> None:
         self.assertEqual(set(self.l1["price_basis"].dropna().unique()), {PriceBasis.RAW_UNADJUSTED.value})

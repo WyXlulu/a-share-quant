@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from src.calendar import trading_calendar_from_dates
+from src.market_calendar import trading_calendar_from_dates
 from src.data.akshare_adapter import (
     akshare_revision_id,
     fetch_exchange_trade_dates,

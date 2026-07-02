@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.calendar import trading_calendar_from_dates
+from src.market_calendar import trading_calendar_from_dates
 from src.data.akshare_adapter import fetch_exchange_trade_dates
 
 

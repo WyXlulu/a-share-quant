@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.calendar import trading_calendar_from_dates
+from src.market_calendar import trading_calendar_from_dates
 from src.data import PITDataPortal
 from src.domain import TradeStatus
 from src.engine import DummyStrategy, EventDrivenClock, OrderIntent

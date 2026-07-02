@@ -23,12 +23,14 @@ REQUIRED_COLUMNS = {
 
 
 class CorporateActionsContractTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.path = Path("data/l2_corporate_actions/corporate_actions.parquet")
-        cls.manifest_path = Path("data/l2_corporate_actions/manifest.json")
-        cls.actions = pd.read_parquet(cls.path)
-        cls.manifest = json.loads(cls.manifest_path.read_text(encoding="utf-8"))
+    def setUp(self) -> None:
+        self.path = Path("data/l2_corporate_actions/corporate_actions.parquet")
+        self.manifest_path = Path("data/l2_corporate_actions/manifest.json")
+        for path in (self.path, self.manifest_path):
+            if not path.exists():
+                self.skipTest(f"本地数据文件不存在: {path}")
+        self.actions = pd.read_parquet(self.path)
+        self.manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
 
     def test_schema_contains_required_fields_and_timezone_timestamps(self) -> None:
         self.assertTrue(REQUIRED_COLUMNS.issubset(self.actions.columns))

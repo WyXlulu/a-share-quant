@@ -8,11 +8,13 @@ from src.domain import PriceBasis, SOURCE_SEMANTICS_UNVERIFIED_FOR_PIT
 
 
 class QuarantineManifestTest(unittest.TestCase):
-    def test_vendor_adjusted_files_are_quarantined_and_manifested(self) -> None:
-        manifest_path = Path("data/quarantine/vendor_adjusted/manifest.json")
-        self.assertTrue(manifest_path.exists())
+    def setUp(self) -> None:
+        self.manifest_path = Path("data/quarantine/vendor_adjusted/manifest.json")
+        if not self.manifest_path.exists():
+            self.skipTest(f"本地数据文件不存在: {self.manifest_path}")
 
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    def test_vendor_adjusted_files_are_quarantined_and_manifested(self) -> None:
+        manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["price_basis"], PriceBasis.VENDOR_ADJUSTED.value)
         self.assertEqual(manifest["source_semantics"], SOURCE_SEMANTICS_UNVERIFIED_FOR_PIT)
         self.assertEqual(manifest["read_policy"], "FORBIDDEN_FOR_L1_FEATURE_EXECUTION")

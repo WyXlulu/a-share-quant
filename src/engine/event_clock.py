@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from src.calendar import TradingCalendar
+from src.market_calendar import TradingCalendar
 from src.data import PITDataPortal
 from src.domain import DataContractError
 

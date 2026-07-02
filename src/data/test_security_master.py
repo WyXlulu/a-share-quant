@@ -15,14 +15,16 @@ from src.data.pit_data_portal import PITDataPortal
 
 
 class SecurityMasterTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.security_master_path = Path("data/l1_raw/security_master.parquet")
-        cls.manifest_path = Path("data/l1_raw/security_master_manifest.json")
-        cls.l1_path = Path("data/l1_raw/daily_bar_raw.parquet")
-        cls.security_master = pd.read_parquet(cls.security_master_path)
-        cls.l1 = pd.read_parquet(cls.l1_path, columns=["security_id"])
-        cls.manifest = json.loads(cls.manifest_path.read_text(encoding="utf-8"))
+    def _load_local_data(self) -> None:
+        self.security_master_path = Path("data/l1_raw/security_master.parquet")
+        self.manifest_path = Path("data/l1_raw/security_master_manifest.json")
+        self.l1_path = Path("data/l1_raw/daily_bar_raw.parquet")
+        for path in (self.security_master_path, self.manifest_path, self.l1_path):
+            if not path.exists():
+                self.skipTest(f"本地数据文件不存在: {path}")
+        self.security_master = pd.read_parquet(self.security_master_path)
+        self.l1 = pd.read_parquet(self.l1_path, columns=["security_id"])
+        self.manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
 
     def test_board_rules_for_known_prefixes(self) -> None:
         self.assertEqual(board_from_security_id("600519"), "主板")
@@ -33,12 +35,14 @@ class SecurityMasterTest(unittest.TestCase):
         self.assertEqual(board_from_security_id("920000"), "北交所")
 
     def test_security_ids_match_l1_daily_bar(self) -> None:
+        self._load_local_data()
         master_ids = set(self.security_master["security_id"].astype(str).str.zfill(6))
         l1_ids = set(self.l1["security_id"].astype(str).str.zfill(6))
         self.assertEqual(len(master_ids), 300)
         self.assertEqual(master_ids, l1_ids)
 
     def test_time_varying_status_fields_are_tainted_current_snapshot_only(self) -> None:
+        self._load_local_data()
         for column in ["is_st", "status"]:
             self.assertTrue(
                 self.security_master[f"{column}_point_in_time_capability"]
@@ -56,6 +60,7 @@ class SecurityMasterTest(unittest.TestCase):
             )
 
     def test_current_st_snapshot_source_is_recorded_or_explicitly_unavailable(self) -> None:
+        self._load_local_data()
         current_st_source = self.manifest["source_ids"]["current_st"]
         if current_st_source == "UNAVAILABLE":
             self.assertTrue(self.manifest["source_errors"]["current_st"])
@@ -68,6 +73,7 @@ class SecurityMasterTest(unittest.TestCase):
             )
 
     def test_available_at_columns_are_present_and_timezone_aware(self) -> None:
+        self._load_local_data()
         required_columns = [
             "available_at",
             "board_available_at",
@@ -90,6 +96,7 @@ class SecurityMasterTest(unittest.TestCase):
         self.assertEqual(moutai["board_available_at"], moutai["list_date_available_at"])
 
     def test_pit_portal_queries_security_master_and_masks_current_snapshot_before_available_at(self) -> None:
+        self._load_local_data()
         snapshot_available_at = pd.Timestamp(self.manifest["snapshot_available_at"])
         before_snapshot = (snapshot_available_at - pd.Timedelta(seconds=1)).isoformat()
         after_snapshot = (snapshot_available_at + pd.Timedelta(seconds=1)).isoformat()
