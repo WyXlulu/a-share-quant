@@ -19,14 +19,17 @@ DAILY_BAR_ASOF_TIME = time(15, 0, 0)
 PRICE_TICK = Decimal("0.01")
 PRICE_TOLERANCE = 1e-9
 MONEY_QUANT = Decimal("0.01")
-BOARD_LIMIT_RATES = {
-    "主板": Decimal("0.10"),
-    "创业板": Decimal("0.20"),
-    "科创板": Decimal("0.20"),
-    "北交所": Decimal("0.30"),
-}
-
 FillStatus = Literal["FILLED", "UNFILLED", "REJECTED", "SUSPENDED"]
+NewListingLimitPolicy = Literal[
+    "DAILY_LIMIT_FROM_LISTING",
+    "FIRST_DAY_ASYMMETRIC",
+    "FIRST_DAY_NO_LIMIT",
+    "FIRST_FIVE_NO_LIMIT",
+]
+
+
+class FeeScheduleError(ValueError):
+    """Raised when a requested fee date is outside known fee rules."""
 
 
 @dataclass(frozen=True)
@@ -71,12 +74,78 @@ class FeeBreakdown:
 
 
 @dataclass(frozen=True)
+class PriceLimitRule:
+    effective_date: date
+    daily_limit_rate: Decimal
+    new_listing_policy: NewListingLimitPolicy = "DAILY_LIMIT_FROM_LISTING"
+    first_day_limit_up_rate: Decimal | None = None
+    first_day_limit_down_rate: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class LimitRuleTable:
+    rules_by_board: dict[str, tuple[PriceLimitRule, ...]] = field(
+        default_factory=lambda: {
+            "主板": (
+                PriceLimitRule(
+                    effective_date=date(2015, 1, 1),
+                    daily_limit_rate=Decimal("0.10"),
+                    new_listing_policy="FIRST_DAY_ASYMMETRIC",
+                    first_day_limit_up_rate=Decimal("0.44"),
+                    first_day_limit_down_rate=Decimal("0.36"),
+                ),
+                PriceLimitRule(
+                    effective_date=date(2023, 2, 17),
+                    daily_limit_rate=Decimal("0.10"),
+                    new_listing_policy="FIRST_FIVE_NO_LIMIT",
+                ),
+            ),
+            "创业板": (
+                PriceLimitRule(
+                    effective_date=date(2015, 1, 1),
+                    daily_limit_rate=Decimal("0.10"),
+                ),
+                PriceLimitRule(
+                    effective_date=date(2020, 8, 24),
+                    daily_limit_rate=Decimal("0.20"),
+                    new_listing_policy="FIRST_FIVE_NO_LIMIT",
+                ),
+            ),
+            "科创板": (
+                PriceLimitRule(
+                    effective_date=date(2019, 7, 22),
+                    daily_limit_rate=Decimal("0.20"),
+                    new_listing_policy="FIRST_FIVE_NO_LIMIT",
+                ),
+            ),
+            "北交所": (
+                PriceLimitRule(
+                    effective_date=date(2021, 11, 15),
+                    daily_limit_rate=Decimal("0.30"),
+                    new_listing_policy="FIRST_DAY_NO_LIMIT",
+                ),
+            ),
+        }
+    )
+
+    def resolve(self, board: str, execution_date: date) -> PriceLimitRule | None:
+        rules = self.rules_by_board.get(board)
+        if not rules:
+            return None
+        active_rules = [rule for rule in rules if rule.effective_date <= execution_date]
+        if not active_rules:
+            return None
+        return sorted(active_rules, key=lambda rule: rule.effective_date)[-1]
+
+
+@dataclass(frozen=True)
 class FeeSchedule:
     # Broker commission is configurable; default is a common retail tier, not an exchange rule.
     commission_rate: Decimal = Decimal("0.00025")
     commission_minimum: Decimal = Decimal("5.00")
-    # Stamp duty: 0.05% on sells only, effective 2023-08-28.
+    # Stamp duty is sell-side only since 2008-09-19: 0.1%, cut to 0.05% on 2023-08-28.
     stamp_duty_rates: tuple[EffectiveRate, ...] = (
+        EffectiveRate(date(2008, 9, 19), Decimal("0.001")),
         EffectiveRate(date(2023, 8, 28), Decimal("0.0005")),
     )
     # Transfer fee: 0.002% before 2025-04-29, 0.001% from 2025-04-29.
@@ -87,11 +156,15 @@ class FeeSchedule:
 
     def resolve(self, execution_ts: date | datetime | pd.Timestamp) -> ResolvedFeeRates:
         execution_date = _as_date(execution_ts)
+        if self.commission_rate <= Decimal("0"):
+            raise FeeScheduleError("佣金费率必须为正，不能静默返回0")
+        if self.commission_minimum < Decimal("0"):
+            raise FeeScheduleError("佣金最低收费不能为负")
         return ResolvedFeeRates(
             commission_rate=self.commission_rate,
             commission_minimum=_money(self.commission_minimum),
-            stamp_duty_rate=_resolve_rate(self.stamp_duty_rates, execution_date),
-            transfer_fee_rate=_resolve_rate(self.transfer_fee_rates, execution_date),
+            stamp_duty_rate=_resolve_rate(self.stamp_duty_rates, execution_date, "印花税"),
+            transfer_fee_rate=_resolve_rate(self.transfer_fee_rates, execution_date, "过户费"),
         )
 
     def calculate(
@@ -134,6 +207,7 @@ class T1OpenExecutor:
     portal: PITDataPortal
     end_date: date
     fee_schedule: FeeSchedule = field(default_factory=FeeSchedule)
+    limit_rule_table: LimitRuleTable = field(default_factory=LimitRuleTable)
 
     def execute(self, order_intents: list[OrderIntent]) -> list[FillLedgerEntry]:
         return [self.execute_one(order_intent) for order_intent in order_intents]
@@ -215,14 +289,22 @@ class T1OpenExecutor:
         open_price: float,
     ) -> str | None:
         limit_context = self._limit_context(order_intent.security_id, order_intent.decision_date, execution_date)
-        if limit_context is None or _is_new_listing_window(
-            self.calendar,
-            limit_context.list_date,
-            execution_date,
-        ):
+        if limit_context is None:
             return None
 
-        limit_up, limit_down = _limit_prices(limit_context.previous_close, limit_context.limit_rate)
+        # TODO(DECISIONS.md): ex-date limit reference prices need corporate-action adjusted
+        # reference-price handling; current implementation still uses previous raw close.
+        limit_prices = _limit_prices_for_rule(
+            self.calendar,
+            limit_context.previous_close,
+            limit_context.limit_rule,
+            limit_context.list_date,
+            execution_date,
+        )
+        if limit_prices is None:
+            return None
+
+        limit_up, limit_down = limit_prices
         if order_intent.side == "buy" and open_price >= limit_up - PRICE_TOLERANCE:
             return "LIMIT_UP_NO_BUY"
         if order_intent.side == "sell" and open_price <= limit_down + PRICE_TOLERANCE:
@@ -243,13 +325,13 @@ class T1OpenExecutor:
         if master is None:
             return None
 
-        limit_rate = BOARD_LIMIT_RATES.get(master.board)
-        if limit_rate is None:
+        limit_rule = self.limit_rule_table.resolve(master.board, execution_date)
+        if limit_rule is None:
             return None
 
         return _LimitContext(
             previous_close=previous_close,
-            limit_rate=limit_rate,
+            limit_rule=limit_rule,
             list_date=master.list_date,
         )
 
@@ -302,10 +384,14 @@ def _as_date(value: date | datetime | pd.Timestamp) -> date:
     return pd.Timestamp(value).date()
 
 
-def _resolve_rate(rates: tuple[EffectiveRate, ...], execution_date: date) -> Decimal:
+def _resolve_rate(rates: tuple[EffectiveRate, ...], execution_date: date, rate_name: str) -> Decimal:
     active_rates = [rate for rate in rates if rate.effective_date <= execution_date]
     if not active_rates:
-        return Decimal("0")
+        earliest = min((rate.effective_date for rate in rates), default=None)
+        raise FeeScheduleError(
+            f"{rate_name}无该日期的已知费率: execution_date={execution_date}, "
+            f"earliest_known_effective_date={earliest}"
+        )
     return sorted(active_rates, key=lambda rate: rate.effective_date)[-1].rate
 
 
@@ -370,7 +456,7 @@ class _ExecutionBar:
 @dataclass(frozen=True)
 class _LimitContext:
     previous_close: float
-    limit_rate: Decimal
+    limit_rule: PriceLimitRule
     list_date: date
 
 
@@ -387,13 +473,52 @@ def _limit_prices(previous_close: float, limit_rate: Decimal) -> tuple[float, fl
     return float(limit_up), float(limit_down)
 
 
-def _is_new_listing_window(
+def _asymmetric_limit_prices(
+    previous_close: float,
+    limit_up_rate: Decimal,
+    limit_down_rate: Decimal,
+) -> tuple[float, float]:
+    close = Decimal(str(previous_close))
+    limit_up = (close * (Decimal("1") + limit_up_rate)).quantize(PRICE_TICK, rounding=ROUND_HALF_UP)
+    limit_down = (close * (Decimal("1") - limit_down_rate)).quantize(
+        PRICE_TICK,
+        rounding=ROUND_HALF_UP,
+    )
+    return float(limit_up), float(limit_down)
+
+
+def _limit_prices_for_rule(
+    calendar: TradingCalendar,
+    previous_close: float,
+    rule: PriceLimitRule,
+    list_date: date,
+    execution_date: date,
+) -> tuple[float, float] | None:
+    trading_day_number = _listing_trading_day_number(calendar, list_date, execution_date)
+    if trading_day_number is not None:
+        if rule.new_listing_policy == "FIRST_FIVE_NO_LIMIT" and trading_day_number <= 5:
+            return None
+        if rule.new_listing_policy == "FIRST_DAY_NO_LIMIT" and trading_day_number == 1:
+            return None
+        if rule.new_listing_policy == "FIRST_DAY_ASYMMETRIC" and trading_day_number == 1:
+            if rule.first_day_limit_up_rate is None or rule.first_day_limit_down_rate is None:
+                return _limit_prices(previous_close, rule.daily_limit_rate)
+            return _asymmetric_limit_prices(
+                previous_close,
+                rule.first_day_limit_up_rate,
+                rule.first_day_limit_down_rate,
+            )
+
+    return _limit_prices(previous_close, rule.daily_limit_rate)
+
+
+def _listing_trading_day_number(
     calendar: TradingCalendar,
     list_date: date,
     execution_date: date,
-) -> bool:
+) -> int | None:
     if execution_date < list_date:
-        return False
+        return None
     if not calendar.trade_dates or list_date < calendar.trade_dates[0]:
-        return False
-    return calendar.trading_days_between(list_date, execution_date) <= 5
+        return None
+    return calendar.trading_days_between(list_date, execution_date)

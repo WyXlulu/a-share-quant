@@ -12,6 +12,7 @@ from src.calendar import trading_calendar_from_dates
 from src.data import PITDataPortal
 from src.domain import TradeStatus
 from src.engine import FeeSchedule, FillLedgerEntry, OrderIntent, T1OpenExecutor
+from src.engine.execution import FeeScheduleError
 
 
 class T1OpenExecutorTest(unittest.TestCase):
@@ -95,10 +96,14 @@ class T1OpenExecutorTest(unittest.TestCase):
         before_transfer_cut = schedule.resolve(date(2025, 4, 28))
         after_transfer_cut = schedule.resolve(date(2025, 4, 29))
 
-        self.assertEqual(before_stamp.stamp_duty_rate, Decimal("0"))
+        self.assertEqual(before_stamp.stamp_duty_rate, Decimal("0.001"))
         self.assertEqual(before_transfer_cut.stamp_duty_rate, Decimal("0.0005"))
         self.assertEqual(before_transfer_cut.transfer_fee_rate, Decimal("0.00002"))
         self.assertEqual(after_transfer_cut.transfer_fee_rate, Decimal("0.00001"))
+
+    def test_fee_schedule_fails_closed_before_known_stamp_duty_rate(self) -> None:
+        with self.assertRaisesRegex(FeeScheduleError, "无该日期的已知费率"):
+            FeeSchedule().resolve(date(2008, 9, 18))
 
     def test_t1_suspended_order_is_explicitly_suspended_without_fill(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -256,6 +261,103 @@ class T1OpenExecutorTest(unittest.TestCase):
             self.assertEqual(main_fill.reason, "LIMIT_UP_NO_BUY")
             self.assertEqual(star_fill.status, "FILLED")
             self.assertEqual(star_fill.execution_price, 11.5)
+
+    def test_chinext_uses_10pct_limit_before_2020_registration_reform(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("300001", "2019-01-02", open_price=10.0, high=10.0, low=10.0, close=10.0),
+                    _bar_row("300001", "2019-01-03", open_price=11.0, high=11.0, low=11.0, close=11.0),
+                ],
+                security_master_rows=[
+                    _security_master_row("300001", board="创业板", list_date="2018-01-01"),
+                ],
+            )
+            calendar = trading_calendar_from_dates([date(2019, 1, 2), date(2019, 1, 3)])
+            executor = T1OpenExecutor(calendar, portal, end_date=date(2019, 1, 3))
+
+            fill = executor.execute_one(_intent("300001", date(2019, 1, 2), side="buy"))
+
+            self.assertEqual(fill.status, "REJECTED")
+            self.assertEqual(fill.reason, "LIMIT_UP_NO_BUY")
+            self.assertEqual(fill.execution_price, 11.0)
+
+    def test_chinext_uses_20pct_limit_after_2020_registration_reform(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("300001", "2021-01-04", open_price=10.0, high=10.0, low=10.0, close=10.0),
+                    _bar_row("300001", "2021-01-05", open_price=11.5, high=11.5, low=11.5, close=11.5),
+                ],
+                security_master_rows=[
+                    _security_master_row("300001", board="创业板", list_date="2018-01-01"),
+                ],
+            )
+            calendar = trading_calendar_from_dates([date(2021, 1, 4), date(2021, 1, 5)])
+            executor = T1OpenExecutor(calendar, portal, end_date=date(2021, 1, 5))
+
+            fill = executor.execute_one(_intent("300001", date(2021, 1, 4), side="buy"))
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.execution_price, 11.5)
+
+    def test_2022_main_board_new_listing_uses_first_day_44_36_then_10pct(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("000001", "2021-12-31", open_price=10.0, high=10.0, low=10.0, close=10.0),
+                    _bar_row("000002", "2021-12-31", open_price=10.0, high=10.0, low=10.0, close=10.0),
+                    _bar_row("000001", "2022-01-03", open_price=14.4, high=14.4, low=14.4, close=10.0),
+                    _bar_row("000002", "2022-01-03", open_price=6.4, high=6.4, low=6.4, close=10.0),
+                    _bar_row("000001", "2022-01-04", open_price=11.0, high=11.0, low=11.0, close=11.0),
+                ],
+                security_master_rows=[
+                    _security_master_row("000001", board="主板", list_date="2022-01-03"),
+                    _security_master_row("000002", board="主板", list_date="2022-01-03"),
+                ],
+            )
+            calendar = trading_calendar_from_dates(
+                [date(2021, 12, 31), date(2022, 1, 3), date(2022, 1, 4)]
+            )
+            executor = T1OpenExecutor(calendar, portal, end_date=date(2022, 1, 4))
+
+            first_day_up = executor.execute_one(_intent("000001", date(2021, 12, 31), side="buy"))
+            first_day_down = executor.execute_one(_intent("000002", date(2021, 12, 31), side="sell"))
+            second_day_up = executor.execute_one(_intent("000001", date(2022, 1, 3), side="buy"))
+
+            self.assertEqual(first_day_up.status, "REJECTED")
+            self.assertEqual(first_day_up.reason, "LIMIT_UP_NO_BUY")
+            self.assertEqual(first_day_up.execution_price, 14.4)
+            self.assertEqual(first_day_down.status, "REJECTED")
+            self.assertEqual(first_day_down.reason, "LIMIT_DOWN_NO_SELL")
+            self.assertEqual(first_day_down.execution_price, 6.4)
+            self.assertEqual(second_day_up.status, "REJECTED")
+            self.assertEqual(second_day_up.reason, "LIMIT_UP_NO_BUY")
+            self.assertEqual(second_day_up.execution_price, 11.0)
+
+    def test_2024_main_board_first_five_listing_sessions_have_no_price_limit_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row("000001", "2024-02-29", open_price=10.0, high=10.0, low=10.0, close=10.0),
+                    _bar_row("000001", "2024-03-01", open_price=20.0, high=20.0, low=20.0, close=20.0),
+                ],
+                security_master_rows=[
+                    _security_master_row("000001", board="主板", list_date="2024-03-01"),
+                ],
+            )
+            calendar = trading_calendar_from_dates([date(2024, 2, 29), date(2024, 3, 1)])
+            executor = T1OpenExecutor(calendar, portal, end_date=date(2024, 3, 1))
+
+            fill = executor.execute_one(_intent("000001", date(2024, 2, 29), side="buy"))
+
+            self.assertEqual(fill.status, "FILLED")
+            self.assertEqual(fill.reason, "T1_OPEN_FILLED")
+            self.assertEqual(fill.execution_price, 20.0)
 
     def test_first_five_listing_sessions_have_no_price_limit_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
