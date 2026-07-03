@@ -10,7 +10,7 @@ import pandas as pd
 
 from src.market_calendar import TradingCalendar
 from src.data import PITDataPortal
-from src.domain import DataContractError, TradeStatus
+from src.domain import DataContractError, TradeStatus, calculate_ex_right_reference_price
 from src.engine.dummy_strategy import OrderIntent
 
 if TYPE_CHECKING:
@@ -687,11 +687,18 @@ class T1OpenExecutor:
             execution_date,
         )
         if not visible_actions.empty:
-            cash_dividend, share_ratio = _corporate_action_adjustments(visible_actions)
-            adjusted_reference = _ex_right_reference_price(
-                previous_close,
-                cash_dividend,
-                share_ratio,
+            cash_dividend, share_ratio, rights_ratio, rights_price = _corporate_action_adjustments(
+                visible_actions
+            )
+            adjusted_reference = _money(
+                calculate_ex_right_reference_price(
+                    execution_date,
+                    previous_close,
+                    cash_dividend,
+                    share_ratio,
+                    rights_ratio,
+                    rights_price,
+                )
             )
             if adjusted_reference != previous_close:
                 return _LimitReferenceContext(
@@ -723,14 +730,6 @@ class T1OpenExecutor:
                 "corporate_actions",
                 _daily_bar_asof(asof_date),
                 security_ids=[security_id],
-                columns=[
-                    "security_id",
-                    "ex_date",
-                    "action_type",
-                    "cash_dividend_per_share",
-                    "share_ratio",
-                    "available_at",
-                ],
             )
         except DataContractError:
             return pd.DataFrame()
@@ -967,27 +966,27 @@ def _limit_prices(previous_close: float, limit_rate: Decimal) -> tuple[float, fl
     return float(limit_up), float(limit_down)
 
 
-def _ex_right_reference_price(
-    previous_close: Decimal,
-    cash_dividend_per_share: Decimal,
-    share_ratio: Decimal,
-) -> Decimal:
-    denominator = Decimal("1") + share_ratio
-    if denominator <= Decimal("0"):
-        return _money(previous_close - cash_dividend_per_share)
-    return _money((previous_close - cash_dividend_per_share) / denominator)
-
-
-def _corporate_action_adjustments(actions: pd.DataFrame) -> tuple[Decimal, Decimal]:
+def _corporate_action_adjustments(actions: pd.DataFrame) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     cash_dividend = Decimal("0.00")
     share_ratio = Decimal("0.00")
+    rights_ratio = Decimal("0.00")
+    rights_consideration = Decimal("0.00")
     for row in actions.itertuples(index=False):
         action_type = str(getattr(row, "action_type"))
+        if action_type == "RIGHTS_ISSUE":
+            row_rights_ratio = _decimal_or_zero(getattr(row, "rights_ratio", Decimal("0.00")))
+            row_rights_price = _decimal_or_zero(getattr(row, "rights_price", Decimal("0.00")))
+            rights_ratio += row_rights_ratio
+            rights_consideration += row_rights_ratio * row_rights_price
+            continue
         if action_type not in ("CASH_DIVIDEND", "STOCK_DIVIDEND"):
             continue
         cash_dividend += _decimal_or_zero(getattr(row, "cash_dividend_per_share"))
         share_ratio += _decimal_or_zero(getattr(row, "share_ratio"))
-    return _money(cash_dividend), share_ratio
+    rights_price = Decimal("0.00")
+    if rights_ratio > Decimal("0"):
+        rights_price = rights_consideration / rights_ratio
+    return _money(cash_dividend), share_ratio, rights_ratio, rights_price
 
 
 def _latest_corporate_action_rows(actions: pd.DataFrame) -> pd.DataFrame:
