@@ -69,6 +69,40 @@ class CorporateActionReferencePriceRuleTest(unittest.TestCase):
             Decimal("8"),
         )
 
+    def test_cash_split_and_rights_combination_uses_full_official_formula(self) -> None:
+        # Official SZSE 2023 rule 4.4.2 formula hand calculation:
+        # numerator = (10 - 0.5) + 6 * 0.2 = 10.7
+        # denominator = 1 + 0.3 + 0.2 = 1.5
+        # reference = 10.7 / 1.5 = 107 / 15.
+        # If the denominator is incorrectly wired as 1+s (=1.3), the result is
+        # about 8.2308; if wired as 1+r (=1.2), it is about 8.9167.
+        self.assertEqual(
+            calculate_ex_right_reference_price(
+                date(2023, 2, 17),
+                Decimal("10"),
+                Decimal("0.5"),
+                Decimal("0.3"),
+                Decimal("0.2"),
+                Decimal("6"),
+            ),
+            Decimal("107") / Decimal("15"),
+        )
+
+    def test_split_transfer_remains_unchanged_when_rights_inputs_are_zero(self) -> None:
+        # Official formula hand calculation:
+        # ((10 - 0) + 0 * 0) / (1 + 0.3 + 0) = 10 / 1.3 = 100 / 13.
+        self.assertEqual(
+            calculate_ex_right_reference_price(
+                date(2023, 2, 17),
+                Decimal("10"),
+                Decimal("0"),
+                Decimal("0.3"),
+                Decimal("0"),
+                Decimal("0"),
+            ),
+            Decimal("100") / Decimal("13"),
+        )
+
     def test_pricing_before_earliest_known_rule_fails_closed(self) -> None:
         with self.assertRaisesRegex(
             CorporateActionPricingRuleError,
