@@ -19,6 +19,9 @@ from src.features.pit_adjustment_service import (
 )
 
 
+# 12-1 momentum spans 252 trading days in total, skips the most recent 21
+# trading days, then scores the remaining 231-trading-day momentum window.
+FULL_LOOKBACK_SPAN_TRADING_DAYS = 252
 LOOKBACK_TRADING_DAYS = 231
 SKIP_RECENT_TRADING_DAYS = 21
 RANKING_METHOD = "ordinal_descending_rank"
