@@ -6,21 +6,16 @@
 
 ## 当前阶段
 
-**Phase 1 已毕业(全局清册审计通过),Phase 2 未启动**
+Phase 2 第一步(PIT复权服务)进行中,接近第一步收尾
 
 ---
 
-## 已完成
-
-- [x] GitHub 私有仓库 `a-share-quant` 建立，本地仓库与三份活文档就位
-- [x] Phase 0 数据底座完成：未复权 L1 面板、security master、交易日历、PITDataPortal as-of 闸门
-- [x] Phase 1 事件驱动引擎主链完成：EventDrivenClock、DummyRebalanceStrategy / DummyStrategy、T+1 开盘执行、涨跌停拒单、停牌不成交、交易费用、容量约束、PortfolioLedger、CorporateActionHandler、除权日限价参考价
-- [x] Phase 1 后半段完成：EX-001 至 EX-014、LT-011 全部完成；第 7.5 步除权日涨跌停参考价 TODO 已清除；基线曾为 `.venv\Scripts\python.exe run_tests.py` 全量 102 测试全绿
-- [x] 第8步 LT-002 + 十年回测runner(0ab4e28)、快路径等价性证明、amount单位校验(1495327)
-- [x] 毕业审计完成：双向独立验证，EX/LT 全矩阵对号，快路径截断代码级确认
-- [x] 清册整备完成(dd77030)：requirements、遗留归档、README、PROJECT 对齐、规范勘误、可移植性收尾
-- [x] 终态生产蓝图入档(da6a5bf)：日频生产工作流、UI 五页面、三条架构不变边界、延后项 retrofit 接缝
-- [x] 当前统一测试入口 `.venv\Scripts\python.exe run_tests.py`：105 个测试全绿，0 skipped
+## 已完成(Phase 2 新增,接续Phase 1毕业f29d083)
+- [x] 共享除权除息参考价规则模块 src/domain/corporate_action_pricing.py(08f8c24):官方公式(上交所4.3.2/深交所4.4.2,深交所§4.4.2已从源文件核实,检索2026-07-03),含配股项,按2023-02-17版本化、早于此fail-closed
+- [x] 参考价组合测试(a430796):七条期望值全官方手算非实现反推,含D/s/r三者非零守门算例(分母1+s+r,期望107/15)
+- [x] execution.py迁移消费共享模块(6c044b5):删私有公式兑现决策1,茅台1184.08/送转6.67双路径逐值不变
+- [x] 可见性判定同源抽取+PITAdjustmentService本体第一刀(968cb10):evaluate_corporate_action_visibility单源(domain层),Service三方法(daily/cumulative/factor),逐点OK/BLOCKED/NO_DATA,security-date级硬阻断+反向守门,evidence_status钉死EXPLORATORY_TAINTED
+- [x] Service判定层asof口径修正(f4c012e):判定改用derivation_asof_ts(非09:00),修复盘后除权日被误BLOCK;handler侧09:00边界逐点不变
 
 ---
 
@@ -33,7 +28,15 @@
 
 ## 下一步
 
-Phase 2:①PIT复权服务(用L2台账按公告日可见性还原真实收益,解锁多日收益特征)→②第一个规则信号:截面动量(无参数拟合,验证三层链路与IC评估语言)→③黄金切片(十几只可人工核验票,目标首个BACKTEST_VALIDATED)→全程EXPLORATORY_TAINTED直至时点成分数据接入
+Phase2第一步收尾测试批:①LT-002B(cutoff=derivation_asof_ts)②LT-002C复用(拒VENDOR_ADJUSTED)③快慢portal等价哨兵延伸到复权服务④UNPROCESSED_BOUNDARY直接补测+handler边界哨兵 → 第二步:截面动量信号 → 第三步:黄金切片(排除5只次新股001280/688047/688506/688521/688981,目标首个BACKTEST_VALIDATED/GOLDEN_SLICE_PIPELINE)
+
+---
+
+## 收官审计待验清单(转Public直查,累积)
+- execution.py迁移源码逐字(6c044b5):确认私有_ex_right_reference_price已删
+- 可见性单源逐字(968cb10):corporate_action_visibility.py唯一判定处、handler内无漏网内联
+- APPLICATION_CUTOVER_TIME=09:00常量(f4c012e):评估是否从判定函数外置
+- handler边界哨兵(测试批加):锁死09:00返回UNPROCESSED_BOUNDARY防未来无声改动
 
 ---
 
