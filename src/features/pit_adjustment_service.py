@@ -333,9 +333,22 @@ class PITAdjustmentService:
             "daily_bar_raw",
             derivation_asof,
             security_ids=[security_id],
-            columns=["security_id", "trade_date", "close", "event_ts", "available_at", "snapshot_id"],
+            columns=[
+                "security_id",
+                "trade_date",
+                "close",
+                "event_ts",
+                "available_at",
+                "price_basis",
+                "snapshot_id",
+            ],
         )
-        _require_columns(rows, ["security_id", "trade_date", "close", "snapshot_id"], "daily_bar_raw")
+        _require_columns(
+            rows,
+            ["security_id", "trade_date", "close", "price_basis", "snapshot_id"],
+            "daily_bar_raw",
+        )
+        _assert_raw_unadjusted(rows)
         if rows.empty:
             return rows.assign(trade_date_key=pd.Series(dtype="object"))
         rows = rows.copy()
@@ -510,6 +523,19 @@ def _require_columns(rows: pd.DataFrame, columns: list[str], table: str) -> None
     missing = [column for column in columns if column not in rows.columns]
     if missing:
         raise DataContractError(f"{table} missing required PIT adjustment columns: {missing}")
+
+
+def _assert_raw_unadjusted(rows: pd.DataFrame) -> None:
+    invalid = rows.loc[
+        rows["price_basis"].isna()
+        | rows["price_basis"].astype(str).ne(PriceBasis.RAW_UNADJUSTED.value)
+    ]
+    if not invalid.empty:
+        observed = sorted(str(value) for value in invalid["price_basis"].dropna().unique().tolist())
+        raise DataContractError(
+            "daily_bar_raw.price_basis must be RAW_UNADJUSTED for PIT adjustment; "
+            f"observed={observed}"
+        )
 
 
 def _date(value: Any) -> date:

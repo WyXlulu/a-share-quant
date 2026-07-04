@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import astuple
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -9,7 +10,13 @@ from pathlib import Path
 import pandas as pd
 
 from src.data import PITDataPortal
-from src.domain import CorporateActionVisibilityStatus, evaluate_corporate_action_visibility
+from src.domain import (
+    CorporateActionVisibilityStatus,
+    DataContractError,
+    PriceBasis,
+    evaluate_corporate_action_visibility,
+)
+from src.engine.backtest_runner import CachedPITDataPortal
 from src.engine.corporate_action_handler import CorporateActionHandler
 from src.engine.portfolio_ledger import CashState, PortfolioLedger, PositionLot, PositionState
 from src.features.pit_adjustment_service import AdjustedReturnStatus, PITAdjustmentService
@@ -20,6 +27,206 @@ ASOF = "2026-02-28T15:00:00+08:00"
 
 
 class PITAdjustmentServiceTest(unittest.TestCase):
+    def test_lt002b_future_ca_available_after_cutoff_does_not_change_closed_points(self) -> None:
+        cutoff = "2026-01-06T15:00:00+08:00"
+        future_ca = _ca_row(
+            "000001",
+            date(2026, 1, 6),
+            "CASH_DIVIDEND",
+            cash="9.99",
+            available_at="2026-01-07T15:00:00+08:00",
+        )
+        self.assertGreater(pd.Timestamp(future_ca["available_at"]), pd.Timestamp(cutoff))
+
+        daily_rows = [
+            _bar_row("000001", date(2026, 1, 2), "10.00"),
+            _bar_row("000001", date(2026, 1, 5), "9.50"),
+            _bar_row("000001", date(2026, 1, 6), "9.60"),
+            _bar_row("000001", date(2026, 1, 7), "9.70"),
+        ]
+        visible_ca = _ca_row(
+            "000001",
+            date(2026, 1, 5),
+            "CASH_DIVIDEND",
+            cash="1.00",
+            available_at="2026-01-02T15:00:00+08:00",
+        )
+
+        with tempfile.TemporaryDirectory() as original_tmp, tempfile.TemporaryDirectory() as mutated_tmp:
+            cutoff_date = pd.Timestamp(cutoff).date()
+            original = _service(
+                original_tmp,
+                daily_rows=daily_rows,
+                ca_rows=[visible_ca],
+            ).daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                cutoff,
+            )
+            mutated = _service(
+                mutated_tmp,
+                daily_rows=daily_rows,
+                ca_rows=[visible_ca, future_ca],
+            ).daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 6),
+                cutoff,
+            )
+
+            self.assertEqual(len(original.points), len(mutated.points))
+            for original_point, mutated_point in zip(original.points, mutated.points):
+                self.assertLessEqual(original_point.trade_date, cutoff_date)
+                self.assertEqual(astuple(original_point), astuple(mutated_point))
+            self.assertEqual(original.ca_events_applied, mutated.ca_events_applied)
+
+    def test_lt002c_vendor_adjusted_daily_bar_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row(
+                        "000001",
+                        date(2026, 1, 2),
+                        "10.00",
+                        price_basis=PriceBasis.VENDOR_ADJUSTED.value,
+                    ),
+                    _bar_row(
+                        "000001",
+                        date(2026, 1, 5),
+                        "10.50",
+                        price_basis=PriceBasis.VENDOR_ADJUSTED.value,
+                    ),
+                ],
+                ca_rows=[],
+            )
+
+            with self.assertRaises(DataContractError):
+                service.daily_adjusted_return_series(
+                    "000001",
+                    date(2026, 1, 5),
+                    date(2026, 1, 5),
+                    ASOF,
+                )
+
+    def test_cached_portal_matches_original_portal_for_all_adjustment_methods(self) -> None:
+        daily_rows = [
+            _bar_row("000001", date(2026, 1, 2), "10.00"),
+            _bar_row("000001", date(2026, 1, 5), "9.50"),
+            _bar_row("000001", date(2026, 1, 6), "10.45"),
+            _bar_row("000001", date(2026, 1, 7), "10.00"),
+        ]
+        ca_rows = [
+            _ca_row(
+                "000001",
+                date(2026, 1, 5),
+                "CASH_DIVIDEND",
+                cash="1.00",
+                available_at="2026-01-02T15:00:00+08:00",
+            )
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = _write_fixture(tmpdir, daily_rows=daily_rows, ca_rows=ca_rows)
+            slow_service = PITAdjustmentService(PITDataPortal(paths))
+            fast_service = PITAdjustmentService(CachedPITDataPortal(paths))
+
+            slow_daily = slow_service.daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 7),
+                ASOF,
+            )
+            fast_daily = fast_service.daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 7),
+                ASOF,
+            )
+            slow_cumulative = slow_service.cumulative_adjusted_return(
+                "000001",
+                "2026-01-07T15:00:00+08:00",
+                3,
+                ASOF,
+            )
+            fast_cumulative = fast_service.cumulative_adjusted_return(
+                "000001",
+                "2026-01-07T15:00:00+08:00",
+                3,
+                ASOF,
+            )
+            slow_factor = slow_service.adjustment_factor_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 7),
+                ASOF,
+            )
+            fast_factor = fast_service.adjustment_factor_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 7),
+                ASOF,
+            )
+
+            _assert_dataclass_equal(self, slow_daily, fast_daily)
+            _assert_dataclass_equal(self, slow_cumulative, fast_cumulative)
+            _assert_dataclass_equal(self, slow_factor, fast_factor)
+
+    def test_future_ca_not_visible_at_derivation_asof_yields_raw_close_return(self) -> None:
+        derivation_asof = "2026-01-06T15:00:00+08:00"
+        future_ca = _ca_row(
+            "000001",
+            date(2026, 1, 6),
+            "CASH_DIVIDEND",
+            cash="1.00",
+            available_at="2026-01-07T15:00:00+08:00",
+        )
+        self.assertGreater(pd.Timestamp(future_ca["available_at"]), pd.Timestamp(derivation_asof))
+        self.assertLessEqual(pd.Timestamp(future_ca["ex_date"]).date(), pd.Timestamp(derivation_asof).date())
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2026, 1, 5), "10.00"),
+                    _bar_row("000001", date(2026, 1, 6), "10.50"),
+                ],
+                ca_rows=[future_ca],
+            )
+
+            series = service.daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 6),
+                date(2026, 1, 6),
+                derivation_asof,
+            )
+
+            # This future CA is visible only at derivation_asof >= 2026-01-07 15:00.
+            # Paired with LT-002B, this proves future CA rows are truly invisible at
+            # the current derivation_asof and therefore cannot change closed points.
+            point = series.points[0]
+            self.assertEqual(point.status, AdjustedReturnStatus.OK)
+            self.assertEqual(point.ca_on_date, tuple())
+            self.assertEqual(point.reference_price, Decimal("10.00"))
+            self.assertEqual(point.adjusted_return, Decimal("10.50") / Decimal("10.00") - Decimal("1"))
+
+    def test_handler_cutover_visibility_boundary_stays_unprocessed_boundary(self) -> None:
+        late_ca = _ca_row(
+            "000001",
+            date(2026, 1, 5),
+            "CASH_DIVIDEND",
+            cash="1.00",
+            available_at="2026-01-05T15:00:00+08:00",
+        )
+
+        self.assertEqual(
+            evaluate_corporate_action_visibility(
+                late_ca,
+                "2026-01-05T09:00:00+08:00",
+            ).status,
+            CorporateActionVisibilityStatus.UNPROCESSED_BOUNDARY,
+        )
+
     def test_daily_adjusted_return_uses_ca_reference_price_and_raw_close_otherwise(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = _service(
@@ -196,23 +403,37 @@ def _service(
     daily_rows: list[dict[str, object]],
     ca_rows: list[dict[str, object]],
 ) -> PITAdjustmentService:
+    return PITAdjustmentService(PITDataPortal(_write_fixture(tmpdir, daily_rows=daily_rows, ca_rows=ca_rows)))
+
+
+def _write_fixture(
+    tmpdir: str,
+    *,
+    daily_rows: list[dict[str, object]],
+    ca_rows: list[dict[str, object]],
+) -> dict[str, Path]:
     tmp = Path(tmpdir)
     daily_path = tmp / "daily_bar_raw.parquet"
     ca_path = tmp / "corporate_actions.parquet"
     pd.DataFrame(daily_rows).to_parquet(daily_path, index=False)
     pd.DataFrame(ca_rows, columns=_CA_COLUMNS).to_parquet(ca_path, index=False)
-    return PITAdjustmentService(
-        PITDataPortal({"daily_bar_raw": daily_path, "corporate_actions": ca_path})
-    )
+    return {"daily_bar_raw": daily_path, "corporate_actions": ca_path}
 
 
-def _bar_row(security_id: str, trade_date: date, close: str) -> dict[str, object]:
+def _bar_row(
+    security_id: str,
+    trade_date: date,
+    close: str,
+    *,
+    price_basis: str = PriceBasis.RAW_UNADJUSTED.value,
+) -> dict[str, object]:
     return {
         "security_id": security_id,
         "trade_date": trade_date.isoformat(),
         "close": close,
         "event_ts": f"{trade_date.isoformat()}T15:00:00+08:00",
         "available_at": f"{trade_date.isoformat()}T15:00:00+08:00",
+        "price_basis": price_basis,
         "snapshot_id": "daily-fixture",
     }
 
@@ -269,6 +490,26 @@ def _business_dates(start: date, count: int) -> list[date]:
             dates.append(current)
         current += timedelta(days=1)
     return dates
+
+
+def _assert_dataclass_equal(testcase: unittest.TestCase, left: object, right: object) -> None:
+    left_snapshot = astuple(left)
+    right_snapshot = astuple(right)
+    if left_snapshot != right_snapshot:
+        testcase.fail(f"first_diff={_first_diff(left_snapshot, right_snapshot)}")
+
+
+def _first_diff(left: object, right: object, path: str = "root") -> str:
+    if left == right:
+        return ""
+    if isinstance(left, tuple) and isinstance(right, tuple):
+        for index, (left_item, right_item) in enumerate(zip(left, right)):
+            diff = _first_diff(left_item, right_item, f"{path}[{index}]")
+            if diff:
+                return diff
+        if len(left) != len(right):
+            return f"{path}.len: {len(left)} != {len(right)}"
+    return f"{path}: {left!r} != {right!r}"
 
 
 _CA_COLUMNS = [
