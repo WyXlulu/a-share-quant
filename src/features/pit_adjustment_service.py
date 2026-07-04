@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -21,7 +21,6 @@ from src.domain import (
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
-CA_DAY_CUTOVER_TIME = time(9, 0, 0)
 EVIDENCE_STATUS = "EXPLORATORY_TAINTED"
 # Next step: add LT-002B fast/slow portal equivalence sentinel outside this first cut.
 
@@ -146,7 +145,7 @@ class PITAdjustmentService:
                 )
                 continue
 
-            block_reason = _block_reason(ca_rows, trade_date)
+            block_reason = _block_reason(ca_rows, derivation_asof)
             if block_reason is not None:
                 points.append(
                     AdjustedReturnPoint(
@@ -390,14 +389,13 @@ def _action_types(actions: pd.DataFrame) -> tuple[str, ...]:
     return tuple(str(action_type) for action_type in actions["action_type"].tolist())
 
 
-def _block_reason(actions: pd.DataFrame, trade_date: date) -> str | None:
+def _block_reason(actions: pd.DataFrame, derivation_asof: pd.Timestamp) -> str | None:
     if actions.empty:
         return None
-    cutover_asof = _ca_day_cutover_asof(trade_date)
     for row in actions.itertuples(index=False):
         visibility = evaluate_corporate_action_visibility(
             row,
-            cutover_asof,
+            derivation_asof,
             supported_action_types=SUPPORTED_FACTOR_ACTION_TYPES,
         )
         if visibility.status in (
@@ -446,7 +444,7 @@ def _applied_event_refs(actions: pd.DataFrame, derivation_asof: pd.Timestamp) ->
             continue
         visibility = evaluate_corporate_action_visibility(
             row,
-            _ca_day_cutover_asof(ex_date),
+            derivation_asof,
             supported_action_types=SUPPORTED_FACTOR_ACTION_TYPES,
         )
         if visibility.status != CorporateActionVisibilityStatus.VISIBLE_APPLICABLE:
@@ -527,7 +525,3 @@ def _asof_timestamp(value: Any) -> pd.Timestamp:
     if timestamp.tzinfo is None or timestamp.utcoffset() is None:
         raise DataContractError("asof timestamp must be timezone-aware")
     return timestamp.tz_convert(ASIA_SHANGHAI)
-
-
-def _ca_day_cutover_asof(trade_date: date) -> pd.Timestamp:
-    return pd.Timestamp(datetime.combine(trade_date, CA_DAY_CUTOVER_TIME, tzinfo=ASIA_SHANGHAI))

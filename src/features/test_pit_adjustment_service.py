@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.data import PITDataPortal
+from src.domain import CorporateActionVisibilityStatus, evaluate_corporate_action_visibility
 from src.engine.corporate_action_handler import CorporateActionHandler
 from src.engine.portfolio_ledger import CashState, PortfolioLedger, PositionLot, PositionState
 from src.features.pit_adjustment_service import AdjustedReturnStatus, PITAdjustmentService
@@ -101,20 +102,41 @@ class PITAdjustmentServiceTest(unittest.TestCase):
             self.assertEqual(result.block_reason, "UNSUPPORTED_CA_TYPE:MERGER")
             self.assertNotEqual(result.adjusted_return, raw_skip_return)
 
-    def test_visibility_classification_is_shared_with_corporate_action_handler_boundary(self) -> None:
+    def test_late_same_day_ca_visibility_uses_each_consumer_asof(self) -> None:
         late_ca = _ca_row(
             "000001",
             date(2026, 1, 5),
             "CASH_DIVIDEND",
-            cash="0.30",
+            cash="1.00",
             available_at="2026-01-05T15:00:00+08:00",
+        )
+        self.assertEqual(
+            evaluate_corporate_action_visibility(
+                late_ca,
+                "2026-01-05T09:00:00+08:00",
+            ).status,
+            CorporateActionVisibilityStatus.UNPROCESSED_BOUNDARY,
+        )
+        self.assertEqual(
+            evaluate_corporate_action_visibility(
+                late_ca,
+                "2026-01-05T14:59:00+08:00",
+            ).status,
+            CorporateActionVisibilityStatus.NOT_YET_VISIBLE,
+        )
+        self.assertEqual(
+            evaluate_corporate_action_visibility(
+                late_ca,
+                "2026-01-05T15:00:00+08:00",
+            ).status,
+            CorporateActionVisibilityStatus.VISIBLE_APPLICABLE,
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             service = _service(
                 tmpdir,
                 daily_rows=[
                     _bar_row("000001", date(2026, 1, 2), "10.00"),
-                    _bar_row("000001", date(2026, 1, 5), "10.00"),
+                    _bar_row("000001", date(2026, 1, 5), "9.50"),
                 ],
                 ca_rows=[late_ca],
             )
@@ -122,7 +144,7 @@ class PITAdjustmentServiceTest(unittest.TestCase):
                 "000001",
                 date(2026, 1, 5),
                 date(2026, 1, 5),
-                ASOF,
+                "2026-01-05T15:00:00+08:00",
             )
 
             handler = CorporateActionHandler(
@@ -132,8 +154,14 @@ class PITAdjustmentServiceTest(unittest.TestCase):
             ledger = _ledger_with_position()
             entries = handler.process_day(ledger, date(2026, 1, 5))
 
-            self.assertEqual(series.points[0].status, AdjustedReturnStatus.BLOCKED)
-            self.assertEqual(series.points[0].block_reason, "CA_AVAILABLE_AFTER_APPLICATION_ASOF")
+            # Official formula hand calculation: reference=(10.00-1.00)/(1+0)=9.00;
+            # adjusted_return=9.50/9.00-1.
+            self.assertEqual(series.points[0].status, AdjustedReturnStatus.OK)
+            self.assertEqual(series.points[0].reference_price, Decimal("9.00"))
+            self.assertEqual(
+                series.points[0].adjusted_return,
+                Decimal("9.50") / Decimal("9.00") - Decimal("1"),
+            )
             self.assertEqual([entry.event_type for entry in entries], ["UNPROCESSED_CA"])
             self.assertEqual(
                 entries[0].fill_reason,

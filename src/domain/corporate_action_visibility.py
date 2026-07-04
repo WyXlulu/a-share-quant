@@ -10,6 +10,7 @@ SUPPORTED_FACTOR_ACTION_TYPES = frozenset(
     {"CASH_DIVIDEND", "STOCK_DIVIDEND", "RIGHTS_ISSUE"}
 )
 SUPPORTED_LEDGER_ACTION_TYPES = frozenset({"CASH_DIVIDEND", "STOCK_DIVIDEND"})
+APPLICATION_CUTOVER_TIME = time(9, 0, 0)
 
 
 class CorporateActionVisibilityStatus(StrEnum):
@@ -40,7 +41,9 @@ def evaluate_corporate_action_visibility(
     asof = _timestamp(asof_ts)
 
     if available_at > asof:
-        if ex_date <= asof.date():
+        if ex_date < asof.date() or (
+            ex_date == asof.date() and asof.timetz().replace(tzinfo=None) <= APPLICATION_CUTOVER_TIME
+        ):
             return CorporateActionVisibilityResult(
                 CorporateActionVisibilityStatus.UNPROCESSED_BOUNDARY,
                 "CA_AVAILABLE_AFTER_APPLICATION_ASOF",
