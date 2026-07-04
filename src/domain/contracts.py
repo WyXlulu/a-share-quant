@@ -10,6 +10,7 @@ class DataContractError(ValueError):
 class PriceBasis(StrEnum):
     RAW_UNADJUSTED = "RAW_UNADJUSTED"
     VENDOR_ADJUSTED = "VENDOR_ADJUSTED"
+    PIT_DERIVED = "PIT_DERIVED"
 
 
 class TradeStatus(StrEnum):

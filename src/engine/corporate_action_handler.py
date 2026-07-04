@@ -8,7 +8,12 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from src.data import PITDataPortal
-from src.domain import DataContractError
+from src.domain import (
+    CorporateActionVisibilityStatus,
+    DataContractError,
+    SUPPORTED_LEDGER_ACTION_TYPES,
+    evaluate_corporate_action_visibility,
+)
 from src.engine.portfolio_ledger import PortfolioLedger, PortfolioLedgerEntry
 from src.market_calendar import TradingCalendar
 
@@ -16,7 +21,6 @@ from src.market_calendar import TradingCalendar
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 CA_DAY_CUTOVER_TIME = time(9, 0, 0)
 CA_DAY_CLOSE_TIME = time(15, 0, 0)
-SUPPORTED_ACTION_TYPES = frozenset({"CASH_DIVIDEND", "STOCK_DIVIDEND"})
 
 
 @dataclass(frozen=True)
@@ -65,17 +69,31 @@ class CorporateActionHandler:
             return entries
 
         actions = _latest_visible_revision(actions)
+        cutover_asof = _ca_day_asof(trade_date, CA_DAY_CUTOVER_TIME)
         for row in actions.itertuples(index=False):
             security_id = str(getattr(row, "security_id")).zfill(6)
-            action_type = str(getattr(row, "action_type"))
+            visibility = evaluate_corporate_action_visibility(
+                row,
+                cutover_asof,
+                supported_action_types=SUPPORTED_LEDGER_ACTION_TYPES,
+            )
             cash_per_share = _decimal(getattr(row, "cash_dividend_per_share"))
             share_ratio = _decimal(getattr(row, "share_ratio"))
 
-            if action_type not in SUPPORTED_ACTION_TYPES:
+            if visibility.status == CorporateActionVisibilityStatus.UNSUPPORTED_TYPE:
                 entry = ledger.mark_unsupported_corporate_event(
                     security_id,
                     trade_date,
-                    action_type,
+                    str(getattr(row, "action_type")),
+                )
+                if entry is not None:
+                    entries.append(entry)
+                continue
+            if visibility.status != CorporateActionVisibilityStatus.VISIBLE_APPLICABLE:
+                entry = ledger.mark_unprocessed_corporate_action(
+                    security_id,
+                    trade_date,
+                    visibility.reason,
                 )
                 if entry is not None:
                     entries.append(entry)
@@ -121,9 +139,7 @@ class CorporateActionHandler:
         return entries
 
     def _visible_actions(self, trade_date: date) -> pd.DataFrame | None:
-        asof_ts = pd.Timestamp(
-            datetime.combine(trade_date, CA_DAY_CUTOVER_TIME, tzinfo=ASIA_SHANGHAI)
-        )
+        asof_ts = _ca_day_asof(trade_date, CA_DAY_CUTOVER_TIME)
         try:
             rows = self.portal.query(
                 "corporate_actions",
@@ -156,6 +172,7 @@ class CorporateActionHandler:
             return []
 
         cutover_keys = _action_keys(day_cutover_actions)
+        cutover_asof = _ca_day_asof(trade_date, CA_DAY_CUTOVER_TIME)
         held_ids = {
             security_id
             for security_id, position in ledger.positions.items()
@@ -172,17 +189,24 @@ class CorporateActionHandler:
             )
             if security_id not in held_ids or action_key in cutover_keys:
                 continue
+            visibility = evaluate_corporate_action_visibility(
+                row,
+                cutover_asof,
+                supported_action_types=SUPPORTED_LEDGER_ACTION_TYPES,
+            )
+            if visibility.status != CorporateActionVisibilityStatus.UNPROCESSED_BOUNDARY:
+                continue
             entry = ledger.mark_unprocessed_corporate_action(
                 security_id,
                 trade_date,
-                "CA_AVAILABLE_AFTER_DAY_CUTOVER",
+                visibility.reason,
             )
             if entry is not None:
                 entries.append(entry)
         return entries
 
     def _actions_visible_at(self, trade_date: date, asof_time: time) -> pd.DataFrame:
-        asof_ts = pd.Timestamp(datetime.combine(trade_date, asof_time, tzinfo=ASIA_SHANGHAI))
+        asof_ts = _ca_day_asof(trade_date, asof_time)
         try:
             rows = self.portal.query(
                 "corporate_actions",
@@ -252,3 +276,7 @@ def _decimal(value: object) -> Decimal:
     if pd.isna(value):
         return Decimal("0")
     return Decimal(str(value))
+
+
+def _ca_day_asof(trade_date: date, asof_time: time) -> pd.Timestamp:
+    return pd.Timestamp(datetime.combine(trade_date, asof_time, tzinfo=ASIA_SHANGHAI))
