@@ -10,6 +10,8 @@ import akshare as ak
 import pandas as pd
 import requests
 
+from src.domain import DataContractError
+
 
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30
 PROXY_ENV_KEYS = (
@@ -480,9 +482,16 @@ def _build_normalized_corporate_actions(
         or _classify_corporate_action(row["cash_dividend_per_share"], row["share_ratio"]),
         axis=1,
     )
-    normalized = normalized.dropna(subset=["ex_date"])
     has_effect = normalized["cash_dividend_per_share"].gt(0) | normalized["share_ratio"].gt(0)
-    normalized = normalized.loc[has_effect | normalized["action_type"].eq("RIGHTS_ISSUE")].copy()
+    action_rows = has_effect | normalized["action_type"].eq("RIGHTS_ISSUE")
+    missing_ex_date_actions = normalized.loc[action_rows & normalized["ex_date"].isna()]
+    if not missing_ex_date_actions.empty:
+        raise DataContractError(
+            "corporate action rows with economic effect must include ex_date; "
+            f"security_id={str(symbol).zfill(6)}, source_id={source_id}, "
+            f"missing_count={len(missing_ex_date_actions)}"
+        )
+    normalized = normalized.loc[action_rows].copy()
     return normalized[
         [
             "security_id",
