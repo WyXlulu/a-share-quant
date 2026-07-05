@@ -210,6 +210,96 @@ class PITAdjustmentServiceTest(unittest.TestCase):
             self.assertEqual(point.reference_price, Decimal("10.00"))
             self.assertEqual(point.adjusted_return, Decimal("10.50") / Decimal("10.00") - Decimal("1"))
 
+    def test_ca_ex_date_on_missing_bar_date_blocks_daily_and_cumulative_returns(self) -> None:
+        missing_trade_date = date(2026, 1, 6)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2026, 1, 2), "10.00"),
+                    _bar_row("000001", date(2026, 1, 5), "10.50"),
+                    _bar_row("000001", date(2026, 1, 7), "10.70"),
+                ],
+                ca_rows=[
+                    _ca_row(
+                        "000001",
+                        missing_trade_date,
+                        "CASH_DIVIDEND",
+                        cash="0.50",
+                        available_at="2026-01-05T15:00:00+08:00",
+                    )
+                ],
+            )
+
+            daily = service.daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 7),
+                ASOF,
+            )
+            cumulative = service.cumulative_adjusted_return(
+                "000001",
+                "2026-01-07T15:00:00+08:00",
+                2,
+                ASOF,
+            )
+
+            self.assertEqual({point.trade_date for point in daily.points}, {date(2026, 1, 5), date(2026, 1, 7)})
+            self.assertTrue(all(point.status == AdjustedReturnStatus.BLOCKED for point in daily.points))
+            self.assertTrue(
+                all(point.block_reason == "CA_EX_DATE_ON_MISSING_BAR_DATE" for point in daily.points)
+            )
+            self.assertEqual(cumulative.status, AdjustedReturnStatus.BLOCKED)
+            self.assertIsNone(cumulative.adjusted_return)
+            self.assertEqual(cumulative.block_reason, "CA_EX_DATE_ON_MISSING_BAR_DATE")
+
+    def test_missing_bar_date_contract_only_blocks_ca_ex_date_inside_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2026, 1, 2), "10.00"),
+                    _bar_row("000001", date(2026, 1, 5), "10.50"),
+                    _bar_row("000001", date(2026, 1, 7), "10.70"),
+                ],
+                ca_rows=[
+                    _ca_row(
+                        "000001",
+                        date(2026, 1, 2),
+                        "CASH_DIVIDEND",
+                        cash="0.10",
+                        available_at="2026-01-02T15:00:00+08:00",
+                    ),
+                    _ca_row(
+                        "000001",
+                        date(2026, 1, 8),
+                        "CASH_DIVIDEND",
+                        cash="0.20",
+                        available_at="2026-01-07T15:00:00+08:00",
+                    ),
+                ],
+            )
+
+            daily = service.daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 7),
+                ASOF,
+            )
+            cumulative = service.cumulative_adjusted_return(
+                "000001",
+                "2026-01-07T15:00:00+08:00",
+                2,
+                ASOF,
+            )
+
+            self.assertEqual([point.status for point in daily.points], [AdjustedReturnStatus.OK] * 2)
+            self.assertTrue(
+                all(point.block_reason != "CA_EX_DATE_ON_MISSING_BAR_DATE" for point in daily.points)
+            )
+            self.assertEqual(cumulative.status, AdjustedReturnStatus.OK)
+            self.assertNotEqual(cumulative.block_reason, "CA_EX_DATE_ON_MISSING_BAR_DATE")
+
     def test_handler_cutover_visibility_boundary_stays_unprocessed_boundary(self) -> None:
         late_ca = _ca_row(
             "000001",

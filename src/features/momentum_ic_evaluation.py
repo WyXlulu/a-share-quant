@@ -136,6 +136,7 @@ def evaluate_momentum_rank_ic(
     rank_ic_mean = _mean(rank_ics)
     icir = _icir(rank_ics)
     ci_bounds = _block_bootstrap_ci(rank_ics, CI_BLOCK_LENGTH, CI_ITERATIONS)
+    ci_method = _ci_method(rank_ics, CI_BLOCK_LENGTH, CI_ITERATIONS)
     input_snapshot_id = _join_snapshot_ids(snapshot_ids)
     quantile_returns = _quantile_returns(all_pairs)
     return MomentumICEvaluationResult(
@@ -145,7 +146,7 @@ def evaluate_momentum_rank_ic(
         quantile_returns=quantile_returns,
         quantile_monotonicity=_quantile_monotonicity(quantile_returns),
         coverage_series=tuple(coverage_points),
-        ci_method=f"moving_block_bootstrap_non_iid(block_length={CI_BLOCK_LENGTH},iterations={CI_ITERATIONS})",
+        ci_method=ci_method,
         ci_bounds=ci_bounds,
         holding_period_days=HOLDING_PERIOD_DAYS,
         evidence_status=EVIDENCE_STATUS,
@@ -239,8 +240,7 @@ def _block_bootstrap_ci(
     if not values:
         return None, None
     if len(values) <= block_length:
-        mean = _mean(values)
-        return mean, mean
+        return None, None
 
     blocks = [values[index : index + block_length] for index in range(0, len(values) - block_length + 1)]
     rng = random.Random(0)
@@ -254,6 +254,13 @@ def _block_bootstrap_ci(
     lower_index = int(Decimal("0.025") * Decimal(len(ordered) - 1))
     upper_index = int(Decimal("0.975") * Decimal(len(ordered) - 1))
     return ordered[lower_index], ordered[upper_index]
+
+
+def _ci_method(values: list[Decimal], block_length: int, iterations: int) -> str:
+    method = f"moving_block_bootstrap_non_iid(block_length={block_length},iterations={iterations})"
+    if len(values) <= block_length:
+        return f"{method};ci_unavailable_insufficient_samples(n={len(values)}<=block={block_length})"
+    return method
 
 
 def _mean(values: list[Decimal]) -> Decimal | None:

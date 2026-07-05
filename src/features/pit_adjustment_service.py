@@ -123,6 +123,31 @@ class PITAdjustmentService:
 
         points: list[AdjustedReturnPoint] = []
         dated_bars = bars.loc[bars["trade_date_key"].between(start_date, end_date)].copy()
+        missing_ca_bar_reason = _missing_ca_ex_date_on_bar_dates(actions, dated_bars)
+        if missing_ca_bar_reason is not None:
+            for row in dated_bars.itertuples(index=False):
+                points.append(
+                    AdjustedReturnPoint(
+                        security,
+                        getattr(row, "trade_date_key"),
+                        AdjustedReturnStatus.BLOCKED,
+                        None,
+                        None,
+                        _decimal_or_none(getattr(row, "close")),
+                        tuple(),
+                        missing_ca_bar_reason,
+                    )
+                )
+            return AdjustedReturnSeries(
+                security_id=security,
+                points=tuple(points),
+                evidence_status=EVIDENCE_STATUS,
+                price_basis=PriceBasis.PIT_DERIVED,
+                derivation_asof_ts=derivation_asof.isoformat(),
+                input_snapshot_id=_join_snapshot_ids(daily_snapshots + ca_snapshots),
+                ca_events_applied=_applied_event_refs(actions, derivation_asof),
+            )
+
         for row in dated_bars.itertuples(index=False):
             trade_date = getattr(row, "trade_date_key")
             raw_close = _decimal_or_none(getattr(row, "close"))
@@ -394,6 +419,18 @@ def _actions_by_ex_date(actions: pd.DataFrame) -> dict[date, pd.DataFrame]:
     if actions.empty:
         return {}
     return {ex_date: rows.copy() for ex_date, rows in actions.groupby("ex_date_key", sort=False)}
+
+
+def _missing_ca_ex_date_on_bar_dates(actions: pd.DataFrame, window_bars: pd.DataFrame) -> str | None:
+    if actions.empty or window_bars.empty:
+        return None
+    window_dates = set(window_bars["trade_date_key"].tolist())
+    first_date = window_bars.iloc[0]["trade_date_key"]
+    last_date = window_bars.iloc[-1]["trade_date_key"]
+    for ex_date in sorted(set(actions["ex_date_key"].tolist())):
+        if first_date <= ex_date <= last_date and ex_date not in window_dates:
+            return "CA_EX_DATE_ON_MISSING_BAR_DATE"
+    return None
 
 
 def _action_types(actions: pd.DataFrame) -> tuple[str, ...]:

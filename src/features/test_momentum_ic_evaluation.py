@@ -140,7 +140,7 @@ class MomentumICEvaluationTest(unittest.TestCase):
             self.assertEqual(result.quantile_returns[4].mean_future_return, Decimal("0.02"))
             self.assertEqual(result.quantile_monotonicity, "NOT_MONOTONIC")
 
-    def test_confidence_interval_uses_block_bootstrap_not_iid_standard_error(self) -> None:
+    def test_small_sample_confidence_interval_is_marked_unavailable(self) -> None:
         signal = _signal({"000001": Decimal("0.20"), "000002": Decimal("0.10")})
         rows = _label_rows({"000001": Decimal("0.05"), "000002": Decimal("0.01")})
 
@@ -155,6 +155,28 @@ class MomentumICEvaluationTest(unittest.TestCase):
 
             self.assertIn("moving_block_bootstrap_non_iid", result.ci_method)
             self.assertIn("block_length=21", result.ci_method)
+            self.assertIn("ci_unavailable_insufficient_samples(n=1<=block=21)", result.ci_method)
+            self.assertNotIn("iid", result.ci_method.replace("non_iid", ""))
+            self.assertEqual(result.ci_bounds, (None, None))
+            self.assertNotIsInstance(result.ci_bounds[0], Decimal)
+            self.assertNotIsInstance(result.ci_bounds[1], Decimal)
+
+    def test_confidence_interval_uses_block_bootstrap_when_sample_exceeds_block_length(self) -> None:
+        signal = _signal({"000001": Decimal("0.20"), "000002": Decimal("0.10")})
+        rows = _label_rows({"000001": Decimal("0.05"), "000002": Decimal("0.01")})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            labels = _label_portal(tmpdir, rows).query_future_outcome_inputs(
+                ["000001", "000002"],
+                ENTRY_TS,
+                EXIT_TS,
+                LabelSpec(),
+            )
+            result = evaluate_momentum_rank_ic([signal] * 22, labels, MATURE_EVAL_ASOF)
+
+            self.assertIn("moving_block_bootstrap_non_iid", result.ci_method)
+            self.assertIn("block_length=21", result.ci_method)
+            self.assertNotIn("ci_unavailable_insufficient_samples", result.ci_method)
             self.assertNotIn("iid", result.ci_method.replace("non_iid", ""))
             self.assertEqual(result.ci_bounds, (Decimal("1"), Decimal("1")))
 
