@@ -535,6 +535,44 @@ class PITAdjustmentServiceTest(unittest.TestCase):
             self.assertEqual(result.block_reason, "MISSING_ENTRY_OPEN")
             self.assertNotEqual(result.adjusted_return, Decimal("10.20") / Decimal("10.00") - Decimal("1"))
 
+    def test_open_to_open_ca_window_matches_hand_calculated_reference_price(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2026, 1, 2), "10.00", open_price="10.00"),
+                    _bar_row("000001", date(2026, 1, 5), "9.40", open_price="9.10"),
+                    _bar_row("000001", date(2026, 1, 6), "9.90", open_price="9.90"),
+                ],
+                ca_rows=[
+                    _ca_row(
+                        "000001",
+                        date(2026, 1, 5),
+                        "CASH_DIVIDEND",
+                        cash="1.00",
+                        available_at="2026-01-02T15:00:00+08:00",
+                    )
+                ],
+            )
+
+            result = service.open_to_open_adjusted_return(
+                "000001",
+                date(2026, 1, 2),
+                date(2026, 1, 6),
+                ASOF,
+            )
+
+            # Official reference price formula on 2026-01-05:
+            # reference=(10.00-1.00+0*0)/(1+0+0)=9.00.
+            # Open-to-open CA adjustment factor=9.00/10.00.
+            # PIT return=9.90/(10.00*(9.00/10.00))-1=0.10.
+            self.assertEqual(result.status, AdjustedReturnStatus.OK)
+            self.assertEqual(
+                result.adjusted_return,
+                Decimal("9.90") / (Decimal("10.00") * (Decimal("9.00") / Decimal("10.00"))) - Decimal("1"),
+            )
+            self.assertEqual(result.adjusted_return, Decimal("0.1"))
+
     def test_cumulative_return_is_blocked_and_never_falls_back_to_raw_skip_compounding(self) -> None:
         trade_dates = _business_dates(date(2026, 1, 2), 21)
         window_dates = trade_dates[1:]

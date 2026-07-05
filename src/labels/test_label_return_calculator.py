@@ -21,6 +21,7 @@ SIGNAL_ASOF = "2026-01-02T15:00:00+08:00"
 WRONG_DERIVATION_ASOF = SIGNAL_ASOF
 CORRECT_DERIVATION_ASOF = "2026-02-03T15:00:00+08:00"
 IMMATURE_EVALUATION_ASOF = "2026-02-02T15:00:00+08:00"
+EXIT_DAY_INTRADAY_EVALUATION_ASOF = "2026-02-03T13:00:00+08:00"
 
 
 TRADING_DATES = (
@@ -171,6 +172,30 @@ class LabelReturnCalculatorTest(unittest.TestCase):
                 IMMATURE_EVALUATION_ASOF,
             )
 
+            self.assertEqual(result.rank_ic_series[0].sample_size, 0)
+            self.assertEqual(result.rank_ic_series[0].immature_label_count, 1)
+            self.assertEqual(result.immature_label_count, 1)
+
+    def test_label_observed_at_keeps_exit_day_intraday_label_immature(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(tmpdir, _base_daily_rows(), _ca_rows())
+            label = calculate_future_return_labels(
+                ["000001"],
+                SIGNAL_ASOF,
+                service,
+                trading_calendar_from_dates(TRADING_DATES),
+            )[0]
+
+            result = evaluate_momentum_rank_ic(
+                [_signal()],
+                [label],
+                EXIT_DAY_INTRADAY_EVALUATION_ASOF,
+            )
+
+            self.assertEqual(label.exit_ts, "2026-02-03T09:30:00+08:00")
+            self.assertEqual(label.label_observed_at, "2026-02-03T15:00:00+08:00")
+            self.assertGreater(pd.Timestamp(label.label_observed_at), pd.Timestamp(label.exit_ts))
+            self.assertGreater(pd.Timestamp(label.label_observed_at), pd.Timestamp(EXIT_DAY_INTRADAY_EVALUATION_ASOF))
             self.assertEqual(result.rank_ic_series[0].sample_size, 0)
             self.assertEqual(result.rank_ic_series[0].immature_label_count, 1)
             self.assertEqual(result.immature_label_count, 1)
