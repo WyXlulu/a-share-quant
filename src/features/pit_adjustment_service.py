@@ -15,6 +15,7 @@ from src.domain import (
     DataContractError,
     PriceBasis,
     SUPPORTED_FACTOR_ACTION_TYPES,
+    TradeStatus,
     calculate_ex_right_reference_price,
     evaluate_corporate_action_visibility,
 )
@@ -70,6 +71,21 @@ class CumulativeAdjustedReturnResult:
     security_id: str
     asof_ts: str
     lookback_trading_days: int
+    status: AdjustedReturnStatus
+    adjusted_return: Decimal | None
+    evidence_status: str
+    price_basis: PriceBasis
+    derivation_asof_ts: str
+    input_snapshot_id: str
+    ca_events_applied: tuple[CorporateActionEventRef, ...]
+    block_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class OpenToOpenAdjustedReturnResult:
+    security_id: str
+    entry_open_date: date
+    exit_open_date: date
     status: AdjustedReturnStatus
     adjusted_return: Decimal | None
     evidence_status: str
@@ -370,6 +386,197 @@ class PITAdjustmentService:
             returns.ca_events_applied,
         )
 
+    def open_to_open_adjusted_return(
+        self,
+        security_id: str,
+        entry_open_date: Any,
+        exit_open_date: Any,
+        derivation_asof_ts: Any,
+    ) -> OpenToOpenAdjustedReturnResult:
+        security = str(security_id).zfill(6)
+        entry_date = _date(entry_open_date)
+        exit_date = _date(exit_open_date)
+        derivation_asof = _asof_timestamp(derivation_asof_ts)
+        if exit_date <= entry_date:
+            raise DataContractError("exit_open_date must be after entry_open_date")
+        if not self.calendar.is_trading_day(entry_date):
+            return OpenToOpenAdjustedReturnResult(
+                security,
+                entry_date,
+                exit_date,
+                AdjustedReturnStatus.BLOCKED,
+                None,
+                EVIDENCE_STATUS,
+                PriceBasis.PIT_DERIVED,
+                derivation_asof.isoformat(),
+                "",
+                tuple(),
+                "ENTRY_OPEN_DATE_NOT_TRADING_DAY",
+            )
+        if not self.calendar.is_trading_day(exit_date):
+            return OpenToOpenAdjustedReturnResult(
+                security,
+                entry_date,
+                exit_date,
+                AdjustedReturnStatus.BLOCKED,
+                None,
+                EVIDENCE_STATUS,
+                PriceBasis.PIT_DERIVED,
+                derivation_asof.isoformat(),
+                "",
+                tuple(),
+                "EXIT_OPEN_DATE_NOT_TRADING_DAY",
+            )
+
+        bars = self._daily_bars_with_open(security, derivation_asof)
+        entry_open = _open_price(bars, entry_date)
+        exit_open = _open_price(bars, exit_date)
+        snapshot_id = _join_snapshot_ids(_snapshot_ids(bars))
+        if entry_open is None:
+            return OpenToOpenAdjustedReturnResult(
+                security,
+                entry_date,
+                exit_date,
+                AdjustedReturnStatus.NO_DATA,
+                None,
+                EVIDENCE_STATUS,
+                PriceBasis.PIT_DERIVED,
+                derivation_asof.isoformat(),
+                snapshot_id,
+                tuple(),
+                "MISSING_ENTRY_OPEN",
+            )
+        if exit_open is None:
+            return OpenToOpenAdjustedReturnResult(
+                security,
+                entry_date,
+                exit_date,
+                AdjustedReturnStatus.NO_DATA,
+                None,
+                EVIDENCE_STATUS,
+                PriceBasis.PIT_DERIVED,
+                derivation_asof.isoformat(),
+                snapshot_id,
+                tuple(),
+                "MISSING_EXIT_OPEN",
+            )
+
+        try:
+            adjustment_start = self.calendar.next_trading_day(entry_date)
+        except (IndexError, ValueError):
+            return OpenToOpenAdjustedReturnResult(
+                security,
+                entry_date,
+                exit_date,
+                AdjustedReturnStatus.BLOCKED,
+                None,
+                EVIDENCE_STATUS,
+                PriceBasis.PIT_DERIVED,
+                derivation_asof.isoformat(),
+                snapshot_id,
+                tuple(),
+                "MISSING_NEXT_TRADING_DAY_AFTER_ENTRY",
+            )
+
+        series = self.daily_adjusted_return_series(
+            security,
+            adjustment_start,
+            exit_date,
+            derivation_asof,
+        )
+        if not series.points:
+            return OpenToOpenAdjustedReturnResult(
+                security,
+                entry_date,
+                exit_date,
+                AdjustedReturnStatus.NO_DATA,
+                None,
+                series.evidence_status,
+                series.price_basis,
+                series.derivation_asof_ts,
+                _join_snapshot_ids([snapshot_id, series.input_snapshot_id]),
+                series.ca_events_applied,
+                "NO_VISIBLE_DAILY_BARS",
+            )
+
+        blocked = next((point for point in series.points if point.status == AdjustedReturnStatus.BLOCKED), None)
+        if blocked is not None:
+            return OpenToOpenAdjustedReturnResult(
+                security,
+                entry_date,
+                exit_date,
+                AdjustedReturnStatus.BLOCKED,
+                None,
+                series.evidence_status,
+                series.price_basis,
+                series.derivation_asof_ts,
+                _join_snapshot_ids([snapshot_id, series.input_snapshot_id]),
+                series.ca_events_applied,
+                blocked.block_reason,
+            )
+
+        missing = next((point for point in series.points if point.status == AdjustedReturnStatus.NO_DATA), None)
+        if missing is not None:
+            return OpenToOpenAdjustedReturnResult(
+                security,
+                entry_date,
+                exit_date,
+                AdjustedReturnStatus.NO_DATA,
+                None,
+                series.evidence_status,
+                series.price_basis,
+                series.derivation_asof_ts,
+                _join_snapshot_ids([snapshot_id, series.input_snapshot_id]),
+                series.ca_events_applied,
+                missing.block_reason,
+            )
+
+        adjustment_factor = Decimal("1")
+        for point in series.points:
+            previous_date, previous_close = _previous_bar(bars, point.trade_date)
+            if previous_close is None or point.reference_price is None:
+                return OpenToOpenAdjustedReturnResult(
+                    security,
+                    entry_date,
+                    exit_date,
+                    AdjustedReturnStatus.NO_DATA,
+                    None,
+                    series.evidence_status,
+                    series.price_basis,
+                    series.derivation_asof_ts,
+                    _join_snapshot_ids([snapshot_id, series.input_snapshot_id]),
+                    series.ca_events_applied,
+                    "MISSING_PREVIOUS_CLOSE_FOR_OPEN_TO_OPEN",
+                )
+            if not _is_adjacent_trading_bar(self.calendar, previous_date, point.trade_date):
+                return OpenToOpenAdjustedReturnResult(
+                    security,
+                    entry_date,
+                    exit_date,
+                    AdjustedReturnStatus.BLOCKED,
+                    None,
+                    series.evidence_status,
+                    series.price_basis,
+                    series.derivation_asof_ts,
+                    _join_snapshot_ids([snapshot_id, series.input_snapshot_id]),
+                    series.ca_events_applied,
+                    "PREVIOUS_CLOSE_NOT_ADJACENT_TRADING_DAY",
+                )
+            adjustment_factor *= point.reference_price / previous_close
+
+        return OpenToOpenAdjustedReturnResult(
+            security,
+            entry_date,
+            exit_date,
+            AdjustedReturnStatus.OK,
+            exit_open / (entry_open * adjustment_factor) - Decimal("1"),
+            series.evidence_status,
+            series.price_basis,
+            series.derivation_asof_ts,
+            _join_snapshot_ids([snapshot_id, series.input_snapshot_id]),
+            series.ca_events_applied,
+        )
+
     def _daily_bars(self, security_id: str, derivation_asof: pd.Timestamp) -> pd.DataFrame:
         rows = self.portal.query(
             "daily_bar_raw",
@@ -388,6 +595,24 @@ class PITAdjustmentService:
         _require_columns(
             rows,
             ["security_id", "trade_date", "close", "price_basis", "snapshot_id"],
+            "daily_bar_raw",
+        )
+        _assert_raw_unadjusted(rows)
+        if rows.empty:
+            return rows.assign(trade_date_key=pd.Series(dtype="object"))
+        rows = rows.copy()
+        rows["trade_date_key"] = pd.to_datetime(rows["trade_date"], errors="raise").dt.date
+        return rows.sort_values("trade_date_key").reset_index(drop=True)
+
+    def _daily_bars_with_open(self, security_id: str, derivation_asof: pd.Timestamp) -> pd.DataFrame:
+        rows = self.portal.query(
+            "daily_bar_raw",
+            derivation_asof,
+            security_ids=[security_id],
+        )
+        _require_columns(
+            rows,
+            ["security_id", "trade_date", "open", "close", "price_basis", "snapshot_id"],
             "daily_bar_raw",
         )
         _assert_raw_unadjusted(rows)
@@ -535,6 +760,19 @@ def _previous_bar(bars: pd.DataFrame, trade_date: date) -> tuple[date | None, De
         return None, None
     row = previous.iloc[0]
     return row["trade_date_key"], _decimal_or_none(row["close"])
+
+
+def _open_price(bars: pd.DataFrame, trade_date: date) -> Decimal | None:
+    if bars.empty:
+        return None
+    rows = bars.loc[bars["trade_date_key"].eq(trade_date)].tail(1)
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    if "trade_status" in row.index and not pd.isna(row["trade_status"]):
+        if str(row["trade_status"]) != TradeStatus.NORMAL.value:
+            return None
+    return _decimal_or_none(row["open"])
 
 
 def _is_adjacent_trading_bar(

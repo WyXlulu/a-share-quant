@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.domain import PriceBasis
+from src.domain import DataContractError, PriceBasis
 from src.features import cross_sectional_momentum, momentum_ic_evaluation
 from src.features.cross_sectional_momentum import (
     CrossSectionalMomentumPoint,
@@ -18,7 +18,7 @@ from src.features.cross_sectional_momentum import (
 )
 from src.features.momentum_ic_evaluation import evaluate_momentum_rank_ic
 from src.features.pit_adjustment_service import AdjustedReturnStatus
-from src.labels import LabelDataPortal, LabelSpec
+from src.labels import FutureReturnLabel, LabelDataPortal, LabelSpec
 
 
 SIGNAL_ASOF = "2026-01-08T15:00:00+08:00"
@@ -197,6 +197,40 @@ class MomentumICEvaluationTest(unittest.TestCase):
             self.assertIn("survivor-bias", result.survivor_bias_warning)
             self.assertIn("do not treat as alpha evidence", result.survivor_bias_warning)
             self.assertEqual(result.holding_period_days, 21)
+
+    def test_ic_rejects_non_pit_derived_future_return_labels(self) -> None:
+        signal = _signal({"000001": Decimal("0.20"), "000002": Decimal("0.10")})
+        labels = (
+            FutureReturnLabel(
+                security_id="000001",
+                signal_asof_ts=SIGNAL_ASOF,
+                entry_ts=ENTRY_TS,
+                exit_ts=EXIT_TS,
+                future_return=Decimal("0.05"),
+                label_end_ts=EXIT_TS,
+                label_observed_at="2026-02-09T15:00:00+08:00",
+                label_spec=LabelSpec().name,
+                price_basis=PriceBasis.VENDOR_ADJUSTED,
+                corporate_action_manifest="bad-label-fixture",
+                input_snapshot_id="bad-label-fixture",
+            ),
+            FutureReturnLabel(
+                security_id="000002",
+                signal_asof_ts=SIGNAL_ASOF,
+                entry_ts=ENTRY_TS,
+                exit_ts=EXIT_TS,
+                future_return=Decimal("0.01"),
+                label_end_ts=EXIT_TS,
+                label_observed_at="2026-02-09T15:00:00+08:00",
+                label_spec=LabelSpec().name,
+                price_basis=PriceBasis.PIT_DERIVED,
+                corporate_action_manifest="pit-label-fixture",
+                input_snapshot_id="pit-label-fixture",
+            ),
+        )
+
+        with self.assertRaisesRegex(DataContractError, "PIT_DERIVED"):
+            evaluate_momentum_rank_ic([signal], labels, MATURE_EVAL_ASOF)
 
 
 def _signal(scores: dict[str, Decimal]) -> CrossSectionalMomentumSignal:

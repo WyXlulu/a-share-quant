@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
 from typing import Iterable
 
@@ -12,6 +13,15 @@ from src.domain import DataContractError, PriceBasis
 
 HOLDING_PERIOD_TRADING_DAYS = 21
 LABEL_SPEC_NAME = "forward_21d_t1_to_t22_open_pit_adjusted_return"
+LABEL_EVIDENCE_STATUS = "EXPLORATORY_TAINTED"
+
+
+class FutureReturnLabelStatus(StrEnum):
+    OK = "OK"
+    BLOCKED = "BLOCKED"
+    NO_DATA = "NO_DATA"
+    NOT_TRADABLE_ENTRY = "NOT_TRADABLE_ENTRY"
+    NOT_TRADABLE_EXIT = "NOT_TRADABLE_EXIT"
 
 
 @dataclass(frozen=True)
@@ -36,6 +46,8 @@ class FutureReturnLabel:
     price_basis: PriceBasis
     corporate_action_manifest: str
     input_snapshot_id: str
+    status: FutureReturnLabelStatus = FutureReturnLabelStatus.OK
+    evidence_status: str = LABEL_EVIDENCE_STATUS
 
 
 @dataclass(frozen=True)
@@ -120,6 +132,8 @@ def _label_from_row(row: object) -> FutureReturnLabel:
         price_basis=PriceBasis(str(getattr(row, "price_basis"))),
         corporate_action_manifest=str(getattr(row, "corporate_action_manifest")),
         input_snapshot_id=str(getattr(row, "snapshot_id")),
+        status=FutureReturnLabelStatus(str(getattr(row, "status", FutureReturnLabelStatus.OK.value))),
+        evidence_status=str(getattr(row, "evidence_status", LABEL_EVIDENCE_STATUS)),
     )
 
 

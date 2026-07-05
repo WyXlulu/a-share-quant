@@ -461,6 +461,80 @@ class PITAdjustmentServiceTest(unittest.TestCase):
             self.assertEqual(series.points[1].reference_price, Decimal("9.50"))
             self.assertEqual(series.points[1].adjusted_return, Decimal("0.1"))
 
+    def test_open_to_open_adjusted_return_uses_same_ca_window_and_keeps_close_path_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2026, 1, 2), "10.00", open_price="10.00"),
+                    _bar_row("000001", date(2026, 1, 5), "9.50", open_price="9.20"),
+                    _bar_row("000001", date(2026, 1, 6), "9.70", open_price="9.60"),
+                ],
+                ca_rows=[
+                    _ca_row(
+                        "000001",
+                        date(2026, 1, 5),
+                        "CASH_DIVIDEND",
+                        cash="1.00",
+                        available_at="2026-01-02T15:00:00+08:00",
+                    )
+                ],
+            )
+
+            close_series = service.daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 5),
+                ASOF,
+            )
+            open_result = service.open_to_open_adjusted_return(
+                "000001",
+                date(2026, 1, 2),
+                date(2026, 1, 6),
+                ASOF,
+            )
+
+            # Close-path regression lock: official formula reference=(10.00-1.00)/(1+0)=9.00;
+            # adjusted_return=9.50/9.00-1. This must stay byte-for-byte unchanged.
+            self.assertEqual(close_series.points[0].status, AdjustedReturnStatus.OK)
+            self.assertEqual(close_series.points[0].reference_price, Decimal("9.00"))
+            self.assertEqual(
+                close_series.points[0].adjusted_return,
+                Decimal("9.50") / Decimal("9.00") - Decimal("1"),
+            )
+            # Open-to-open hand calculation uses the same CA adjustment factor 9.00/10.00:
+            # 9.60 / (10.00 * 0.9) - 1.
+            self.assertEqual(open_result.status, AdjustedReturnStatus.OK)
+            self.assertEqual(
+                open_result.adjusted_return,
+                Decimal("9.60") / (Decimal("10.00") * Decimal("0.9")) - Decimal("1"),
+            )
+            self.assertEqual(open_result.price_basis, PriceBasis.PIT_DERIVED)
+            self.assertEqual(open_result.evidence_status, "EXPLORATORY_TAINTED")
+
+    def test_open_to_open_missing_entry_open_returns_no_data_without_using_close(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2026, 1, 2), "10.00", open_price=None),
+                    _bar_row("000001", date(2026, 1, 5), "10.50", open_price="10.20"),
+                ],
+                ca_rows=[],
+            )
+
+            result = service.open_to_open_adjusted_return(
+                "000001",
+                date(2026, 1, 2),
+                date(2026, 1, 5),
+                ASOF,
+            )
+
+            self.assertEqual(result.status, AdjustedReturnStatus.NO_DATA)
+            self.assertIsNone(result.adjusted_return)
+            self.assertEqual(result.block_reason, "MISSING_ENTRY_OPEN")
+            self.assertNotEqual(result.adjusted_return, Decimal("10.20") / Decimal("10.00") - Decimal("1"))
+
     def test_cumulative_return_is_blocked_and_never_falls_back_to_raw_skip_compounding(self) -> None:
         trade_dates = _business_dates(date(2026, 1, 2), 21)
         window_dates = trade_dates[1:]
@@ -625,11 +699,13 @@ def _bar_row(
     trade_date: date,
     close: str,
     *,
+    open_price: str | None = "__USE_CLOSE__",
     price_basis: str = PriceBasis.RAW_UNADJUSTED.value,
 ) -> dict[str, object]:
     return {
         "security_id": security_id,
         "trade_date": trade_date.isoformat(),
+        "open": close if open_price == "__USE_CLOSE__" else open_price,
         "close": close,
         "event_ts": f"{trade_date.isoformat()}T15:00:00+08:00",
         "available_at": f"{trade_date.isoformat()}T15:00:00+08:00",

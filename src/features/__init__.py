@@ -6,6 +6,7 @@ from .pit_adjustment_service import (
     AdjustmentFactorSeries,
     CorporateActionEventRef,
     CumulativeAdjustedReturnResult,
+    OpenToOpenAdjustedReturnResult,
     PITAdjustmentService,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "AdjustmentFactorSeries",
     "CorporateActionEventRef",
     "CumulativeAdjustedReturnResult",
+    "OpenToOpenAdjustedReturnResult",
     "PITAdjustmentService",
 ]

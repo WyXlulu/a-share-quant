@@ -7,7 +7,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from src.domain import DataContractError
+from src.domain import DataContractError, PriceBasis
 from src.features.cross_sectional_momentum import CrossSectionalMomentumSignal
 from src.features.pit_adjustment_service import AdjustedReturnStatus, EVIDENCE_STATUS
 from src.labels import FutureReturnLabel
@@ -71,10 +71,10 @@ def evaluate_momentum_rank_ic(
     evaluation_asof_ts: str | pd.Timestamp,
 ) -> MomentumICEvaluationResult:
     evaluation_asof = _timestamp(evaluation_asof_ts, "evaluation_asof_ts")
-    labels_by_key = {
-        (label.signal_asof_ts, label.security_id): label
-        for label in future_returns
-    }
+    labels = tuple(future_returns)
+    for label in labels:
+        _assert_label_price_basis(label)
+    labels_by_key = {(label.signal_asof_ts, label.security_id): label for label in labels}
 
     rank_ic_points: list[RankICPoint] = []
     coverage_points: list[CoveragePoint] = []
@@ -160,6 +160,11 @@ def evaluate_momentum_rank_ic(
 def _assert_signal_taint(signal: CrossSectionalMomentumSignal) -> None:
     if signal.evidence_status != EVIDENCE_STATUS:
         raise DataContractError("momentum IC requires EXPLORATORY_TAINTED signal inputs")
+
+
+def _assert_label_price_basis(label: FutureReturnLabel) -> None:
+    if label.price_basis != PriceBasis.PIT_DERIVED:
+        raise DataContractError("momentum IC future return labels must use PIT_DERIVED price basis")
 
 
 def _is_mature(label: FutureReturnLabel, evaluation_asof: pd.Timestamp) -> bool:
