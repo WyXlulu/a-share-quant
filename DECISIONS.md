@@ -234,4 +234,19 @@
 - **修复**：新建 `src/domain/corporate_action_pricing.py` 固化完整官方公式(含配股项)，按生效日2023-02-17版本化、早于此fail-closed；测试期望值全部取官方公式手算(含 D/s/r 三者非零组合守门算例，验证分母为`1+s+r`而非`1+s`或`1+r`)。execution.py 已迁移至消费本模块、删除私有公式，兑现决策1“两处不得各自维护”。
 - **验证**：迁移后 `run_tests.py` 实测 `total=112, passed=112, skipped=0, failures=0, errors=0` 全绿；纯现金分红路径(茅台 fixture)参考价迁移前后为 `1184.08` 不变；纯送转路径 fixture 迁移前后为 `6.67` 不变。
 - **已知局限**：切点固化为2023-02-17(当前规则文本发布日)，早于此的除权日在共享模块层fail-closed。Phase 1哑策略下execution.py不实际命中该边界；待未来真实持仓策略会持有配股标的、或execution.py需处理2023前除权日时，再外部取证公式历史生效版本、将切点退至回测窗口起点。
+
+## 2026-07-03 | PIT复权服务可见性判定的asof口径修正
+- 发现:PITAdjustmentService(968cb10)判定CA可见性时硬编码09:00 cutover asof,而非用服务自身的derivation_asof_ts。后果:盘后(≥15:00)derivation视角下,available_at=除权日15:00的迟到CA本已可见、因子本可构造,却被09:00口径误判为UNPROCESSED_BOUNDARY而误BLOCK,导致除权日复权因子系统性丢点(A股分红送转集中5-7月,误阻断成片)。
+- 原因:同源架构下,可见性判定函数(evaluate_corporate_action_visibility)由handler与service共用是正确的;但两消费者必须传各自的asof——handler传09:00执行cutover(判开盘前能否处理),service传derivation_asof_ts(判盘后因子能否构造)。原实现让service错误复用了09:00口径,把"判定函数单源"误做成"asof也统一",违背同源本义(公式该合、asof该分)。
+- 修复(f4c012e):service判定层三处改用derivation_asof_ts,删除service内09:00硬编码;共享判定函数将"ex_date当天"按APPLICATION_CUTOVER_TIME(09:00)细分——09:00前后分别落UNPROCESSED_BOUNDARY/NOT_YET_VISIBLE,使同一函数在handler(09:00)与service(盘中14:59/盘后15:00)三个asof下各自正确分叉。
+- 验证:handler侧09:00对601318类迟到CA仍返回UNPROCESSED_BOUNDARY(改前改后逐点不变,手算+既有测试test_same_day_late_visible_ca_is_marked_unprocessed确认);service盘后该除权日为OK,daily_adjusted_return=9.50/9.00-1=+5.56%(手算);116测试全绿。
+- 已知有界瑕疵:APPLICATION_CUTOVER_TIME=09:00作为常量写入共享判定函数,使执行层时间口径渗入本应中立的判定逻辑。当前行为正确、handler语义不变;列入Phase2收官审计,评估是否将cutover时刻完全外置由调用方asof自带。
+- 镜像教训:与2026-07-03参考价双源合一对照——参考价是"两处公式必须合一",asof是"两处口径必须各传";同源的真义是判定逻辑单源、而非输入也统一。
+
+## 2026-07-03 | PIT复权服务price_basis校验缺口修复
+- 发现:LT-002C测试暴露PITAdjustmentService读daily_bar_raw时未请求/校验price_basis,vendor-adjusted(hfq/qfq)行会被静默当raw使用,在复权服务内叠加第二重复权,收益口径失真。
+- 原因:Service读取路径漏了防泄露架构本应强制的price_basis校验(规范§3.4"默认拒绝price_basis缺失/非RAW的数据");firewall在此处未落地,靠测试才抓出。
+- 修复(21aee51):_daily_bars()请求price_basis列,_require_columns要求其存在(缺失DataContractError),_assert_raw_unadjusted对None/NA/非RAW_UNADJUSTED一律抛DataContractError,复用既有错误类型不新造。RAW正常路径不受影响。
+- 验证:LT-002C由FAILED转PASSED;全量121测试全绿(基线116+5)。
+- 附:同批修正一处测试设计错误——原UNPROCESSED_BOUNDARY在Service层的直接补测构造了available_at>asof的迟到CA,被portal的available_at过滤正确挡掉、无法进入判定层,故该态在Service盘后asof语境下不可自然触发(它是handler 09:00 cutover层的态)。替换为"未来CA在当前asof不可见→走raw-close"测试(与LT-002B成对),BLOCKED传染在Service层由UNSUPPORTED_TYPE覆盖(968cb10已有)。
 ---
