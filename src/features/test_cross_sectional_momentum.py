@@ -25,6 +25,7 @@ from src.features.pit_adjustment_service import (
     EVIDENCE_STATUS,
     PITAdjustmentService,
 )
+from src.market_calendar import trading_calendar_from_dates
 
 
 ASOF = "2026-01-08T15:00:00+08:00"
@@ -247,7 +248,8 @@ def _service(
     daily_rows: list[dict[str, object]],
     ca_rows: list[dict[str, object]],
 ) -> PITAdjustmentService:
-    return PITAdjustmentService(PITDataPortal(_write_fixture(tmpdir, daily_rows=daily_rows, ca_rows=ca_rows)))
+    calendar = trading_calendar_from_dates([pd.Timestamp(row["trade_date"]).date() for row in daily_rows])
+    return PITAdjustmentService(PITDataPortal(_write_fixture(tmpdir, daily_rows=daily_rows, ca_rows=ca_rows)), calendar)
 
 
 def _write_fixture(

@@ -18,6 +18,7 @@ from src.domain import (
     calculate_ex_right_reference_price,
     evaluate_corporate_action_visibility,
 )
+from src.market_calendar import TradingCalendar
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -102,6 +103,7 @@ class AdjustmentFactorSeries:
 @dataclass(frozen=True)
 class PITAdjustmentService:
     portal: PITDataPortal
+    calendar: TradingCalendar
 
     def daily_adjusted_return_series(
         self,
@@ -151,7 +153,7 @@ class PITAdjustmentService:
         for row in dated_bars.itertuples(index=False):
             trade_date = getattr(row, "trade_date_key")
             raw_close = _decimal_or_none(getattr(row, "close"))
-            previous_close = _previous_close(bars, trade_date)
+            previous_date, previous_close = _previous_bar(bars, trade_date)
             ca_rows = action_map.get(trade_date, pd.DataFrame())
             ca_types = _action_types(ca_rows)
 
@@ -166,6 +168,21 @@ class PITAdjustmentService:
                         raw_close,
                         ca_types,
                         "MISSING_CLOSE_OR_PREVIOUS_CLOSE",
+                    )
+                )
+                continue
+
+            if not _is_adjacent_trading_bar(self.calendar, previous_date, trade_date):
+                points.append(
+                    AdjustedReturnPoint(
+                        security,
+                        trade_date,
+                        AdjustedReturnStatus.BLOCKED,
+                        None,
+                        None,
+                        raw_close,
+                        ca_types,
+                        "PREVIOUS_CLOSE_NOT_ADJACENT_TRADING_DAY",
                     )
                 )
                 continue
@@ -512,11 +529,29 @@ def _applied_event_refs(actions: pd.DataFrame, derivation_asof: pd.Timestamp) ->
     return tuple(refs)
 
 
-def _previous_close(bars: pd.DataFrame, trade_date: date) -> Decimal | None:
+def _previous_bar(bars: pd.DataFrame, trade_date: date) -> tuple[date | None, Decimal | None]:
     previous = bars.loc[bars["trade_date_key"].lt(trade_date)].tail(1)
     if previous.empty:
-        return None
-    return _decimal_or_none(previous.iloc[0]["close"])
+        return None, None
+    row = previous.iloc[0]
+    return row["trade_date_key"], _decimal_or_none(row["close"])
+
+
+def _is_adjacent_trading_bar(
+    calendar: TradingCalendar,
+    previous_date: date | None,
+    trade_date: date,
+) -> bool:
+    if previous_date is None:
+        return False
+    if previous_date >= trade_date:
+        return False
+    if not calendar.is_trading_day(previous_date) or not calendar.is_trading_day(trade_date):
+        return False
+    try:
+        return calendar.previous_trading_day(trade_date) == previous_date
+    except (IndexError, ValueError):
+        return False
 
 
 def _snapshot_ids(rows: pd.DataFrame) -> list[str]:

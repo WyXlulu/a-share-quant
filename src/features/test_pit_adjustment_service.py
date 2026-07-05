@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from dataclasses import astuple
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -128,8 +128,9 @@ class PITAdjustmentServiceTest(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             paths = _write_fixture(tmpdir, daily_rows=daily_rows, ca_rows=ca_rows)
-            slow_service = PITAdjustmentService(PITDataPortal(paths))
-            fast_service = PITAdjustmentService(CachedPITDataPortal(paths))
+            calendar = _calendar_from_daily_rows(daily_rows)
+            slow_service = PITAdjustmentService(PITDataPortal(paths), calendar)
+            fast_service = PITAdjustmentService(CachedPITDataPortal(paths), calendar)
 
             slow_daily = slow_service.daily_adjusted_return_series(
                 "000001",
@@ -260,6 +261,7 @@ class PITAdjustmentServiceTest(unittest.TestCase):
                 daily_rows=[
                     _bar_row("000001", date(2026, 1, 2), "10.00"),
                     _bar_row("000001", date(2026, 1, 5), "10.50"),
+                    _bar_row("000001", date(2026, 1, 6), "10.60"),
                     _bar_row("000001", date(2026, 1, 7), "10.70"),
                 ],
                 ca_rows=[
@@ -293,12 +295,114 @@ class PITAdjustmentServiceTest(unittest.TestCase):
                 ASOF,
             )
 
-            self.assertEqual([point.status for point in daily.points], [AdjustedReturnStatus.OK] * 2)
+            self.assertEqual([point.status for point in daily.points], [AdjustedReturnStatus.OK] * 3)
             self.assertTrue(
                 all(point.block_reason != "CA_EX_DATE_ON_MISSING_BAR_DATE" for point in daily.points)
             )
             self.assertEqual(cumulative.status, AdjustedReturnStatus.OK)
             self.assertNotEqual(cumulative.block_reason, "CA_EX_DATE_ON_MISSING_BAR_DATE")
+
+    def test_non_ca_missing_bar_blocks_cross_gap_daily_return(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2026, 1, 2), "10.00"),
+                    _bar_row("000001", date(2026, 1, 5), "10.50"),
+                    _bar_row("000001", date(2026, 1, 8), "10.80"),
+                ],
+                ca_rows=[],
+                calendar_dates=[
+                    date(2026, 1, 2),
+                    date(2026, 1, 5),
+                    date(2026, 1, 6),
+                    date(2026, 1, 7),
+                    date(2026, 1, 8),
+                ],
+            )
+
+            daily = service.daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 8),
+                ASOF,
+            )
+            cumulative = service.cumulative_adjusted_return(
+                "000001",
+                "2026-01-08T15:00:00+08:00",
+                2,
+                ASOF,
+            )
+
+            self.assertEqual(daily.points[0].status, AdjustedReturnStatus.OK)
+            self.assertEqual(
+                daily.points[0].adjusted_return,
+                Decimal("10.50") / Decimal("10.00") - Decimal("1"),
+            )
+            blocked_point = daily.points[1]
+            self.assertEqual(blocked_point.trade_date, date(2026, 1, 8))
+            self.assertEqual(blocked_point.status, AdjustedReturnStatus.BLOCKED)
+            self.assertIsNone(blocked_point.adjusted_return)
+            self.assertEqual(blocked_point.reference_price, None)
+            self.assertEqual(blocked_point.block_reason, "PREVIOUS_CLOSE_NOT_ADJACENT_TRADING_DAY")
+            self.assertNotEqual(
+                blocked_point.adjusted_return,
+                Decimal("10.80") / Decimal("10.50") - Decimal("1"),
+            )
+            self.assertEqual(cumulative.status, AdjustedReturnStatus.BLOCKED)
+            self.assertEqual(cumulative.block_reason, "PREVIOUS_CLOSE_NOT_ADJACENT_TRADING_DAY")
+
+    def test_holiday_gap_uses_real_calendar_previous_trading_day_and_stays_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2024, 9, 30), "10.00"),
+                    _bar_row("000001", date(2024, 10, 8), "10.50"),
+                ],
+                ca_rows=[],
+                calendar_dates=[date(2024, 9, 30), date(2024, 10, 8)],
+            )
+
+            series = service.daily_adjusted_return_series(
+                "000001",
+                date(2024, 10, 8),
+                date(2024, 10, 8),
+                ASOF,
+            )
+
+            point = series.points[0]
+            self.assertEqual(point.status, AdjustedReturnStatus.OK)
+            self.assertEqual(point.reference_price, Decimal("10.00"))
+            self.assertEqual(
+                point.adjusted_return,
+                Decimal("10.50") / Decimal("10.00") - Decimal("1"),
+            )
+
+    def test_adjacent_trading_bar_still_uses_hand_calculated_daily_return(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2026, 1, 5), "10.00"),
+                    _bar_row("000001", date(2026, 1, 6), "10.50"),
+                ],
+                ca_rows=[],
+            )
+
+            series = service.daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 6),
+                date(2026, 1, 6),
+                ASOF,
+            )
+
+            self.assertEqual(series.points[0].status, AdjustedReturnStatus.OK)
+            self.assertEqual(series.points[0].reference_price, Decimal("10.00"))
+            self.assertEqual(
+                series.points[0].adjusted_return,
+                Decimal("10.50") / Decimal("10.00") - Decimal("1"),
+            )
 
     def test_handler_cutover_visibility_boundary_stays_unprocessed_boundary(self) -> None:
         late_ca = _ca_row(
@@ -492,8 +596,14 @@ def _service(
     *,
     daily_rows: list[dict[str, object]],
     ca_rows: list[dict[str, object]],
+    calendar_dates: list[date] | None = None,
 ) -> PITAdjustmentService:
-    return PITAdjustmentService(PITDataPortal(_write_fixture(tmpdir, daily_rows=daily_rows, ca_rows=ca_rows)))
+    calendar = trading_calendar_from_dates(calendar_dates) if calendar_dates is not None else _calendar_from_daily_rows(daily_rows)
+    return PITAdjustmentService(PITDataPortal(_write_fixture(tmpdir, daily_rows=daily_rows, ca_rows=ca_rows)), calendar)
+
+
+def _calendar_from_daily_rows(daily_rows: list[dict[str, object]]):
+    return trading_calendar_from_dates([pd.Timestamp(row["trade_date"]).date() for row in daily_rows])
 
 
 def _write_fixture(
@@ -573,12 +683,35 @@ def _ledger_with_position() -> PortfolioLedger:
 
 
 def _business_dates(start: date, count: int) -> list[date]:
-    dates: list[date] = []
-    current = start
-    while len(dates) < count:
-        if current.weekday() < 5:
-            dates.append(current)
-        current += timedelta(days=1)
+    explicit_trading_dates = [
+        date(2026, 1, 2),
+        date(2026, 1, 5),
+        date(2026, 1, 6),
+        date(2026, 1, 7),
+        date(2026, 1, 8),
+        date(2026, 1, 9),
+        date(2026, 1, 12),
+        date(2026, 1, 13),
+        date(2026, 1, 14),
+        date(2026, 1, 15),
+        date(2026, 1, 16),
+        date(2026, 1, 19),
+        date(2026, 1, 20),
+        date(2026, 1, 21),
+        date(2026, 1, 22),
+        date(2026, 1, 23),
+        date(2026, 1, 26),
+        date(2026, 1, 27),
+        date(2026, 1, 28),
+        date(2026, 1, 29),
+        date(2026, 1, 30),
+    ]
+    if start not in explicit_trading_dates:
+        raise ValueError(f"fixture start date is not in explicit trading calendar: {start}")
+    start_index = explicit_trading_dates.index(start)
+    dates = explicit_trading_dates[start_index : start_index + count]
+    if len(dates) != count:
+        raise ValueError("fixture explicit trading calendar is too short")
     return dates
 
 

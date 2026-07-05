@@ -60,7 +60,7 @@ class MomentumStrategyTest(unittest.TestCase):
             ledger = _ledger(calendar, initial_cash=Decimal("100000.00"))
             strategy = SignalDrivenMomentumStrategy(
                 ("000001", "000002", "000003"),
-                PITAdjustmentService(portal),
+                PITAdjustmentService(portal, calendar),
                 ledger,
                 MomentumStrategyConfig(
                     top_n=2,
