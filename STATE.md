@@ -6,16 +6,17 @@
 
 ## 当前阶段
 
-Phase 2 第一步(PIT复权服务)已收官,第二步(截面动量信号)未启动
+Phase 2 第二步(截面动量信号)已收官,第三步(黄金切片)未启动;第二步收官全库审计待做
 
 ---
 
 ## 已完成(Phase 2,接续Phase 1毕业f29d083)
-- [x] 共享除权除息参考价规则模块(08f8c24)+组合测试(a430796):官方公式含配股项、版本化fail-closed、D/s/r三者非零守门算例
-- [x] execution.py迁移消费共享模块(6c044b5):兑现决策1,茅台/送转双路径逐值不变
-- [x] PITAdjustmentService本体+可见性判定同源抽取(968cb10):三方法,security-date级硬阻断+反向守门,evidence_status钉死EXPLORATORY_TAINTED
-- [x] Service判定层asof口径修正(f4c012e):判定用derivation_asof_ts,handler侧09:00边界逐点不变
-- [x] Service哨兵加固(21aee51):price_basis校验修复(拒vendor-adjusted)+LT-002B/LT-002C/快慢portal等价/未来CA不可见/handler边界五组测试;121测试全绿
+- [x] 第一步 PIT复权服务收官:参考价模块+组合测试(08f8c24/a430796)、execution迁移兑现决策1(6c044b5)、PITAdjustmentService本体+可见性同源(968cb10)、asof口径修正(f4c012e)、price_basis校验+五组哨兵(21aee51)
+- [x] 第二步 截面动量信号收官:
+  - 信号本体(ec53288):12-1动量(动量窗口231=252回看skip21),消费cumulative_adjusted_return,BLOCKED/NO_DATA票剔除不混入排名,全程EXPLORATORY_TAINTED
+  - IC评估+LabelDataPortal隔离(1d9a177):RankIC/ICIR/分位单调性,未来收益经LabelDataPortal与信号函数结构隔离,block bootstrap非IID置信区间(block=21),LT-003成熟度门禁
+  - 信号驱动策略接执行边界(1b1affc):SignalDrivenMomentumStrategy等权top_n,只产OrderIntent经既有锁定/执行边界,执行层零改动(train-serve同源),BLOCKED不冻结已有持仓正常调仓
+- [x] 当前全量基线:136测试全绿
 
 ---
 
@@ -28,15 +29,17 @@ Phase 2 第一步(PIT复权服务)已收官,第二步(截面动量信号)未启�
 
 ## 下一步
 
-Phase2第二步:截面动量信号——第一个规则信号(无参数拟合),消费复权收益,验证特征→信号→OrderIntent三层链路与IC评估语言;全程EXPLORATORY_TAINTED → 第三步:黄金切片(排除5只次新股001280/688047/688506/688521/688981,目标首个BACKTEST_VALIDATED/GOLDEN_SLICE_PIPELINE)
+第二步收官全库审计(转Public,克隆直查收官审计待验清单+第二步新代码结构断言+独立复跑136测试)→ 第三步:黄金切片(十几只可人工核验票,排除5只次新股001280/688047/688506/688521/688981,目标首个BACKTEST_VALIDATED/GOLDEN_SLICE_PIPELINE)
 
 ---
 
 ## 收官审计待验清单(转Public直查,累积)
-- execution.py迁移源码逐字(6c044b5):私有_ex_right_reference_price已删
-- 可见性单源逐字(968cb10):corporate_action_visibility.py唯一判定处、handler内无漏网内联
+- execution.py迁移源码逐字(6c044b5):私有_ex_right_reference_price已删、无第二份参考价公式
+- 可见性单源逐字(968cb10):corporate_action_visibility.py唯一判定处、handler内无漏网内联、两处分类路由确调用共享函数
 - APPLICATION_CUTOVER_TIME=09:00常量(f4c012e):评估是否从判定函数外置
-- price_basis校验路径(21aee51):确认_assert_raw_unadjusted覆盖Service所有daily_bar读取入口,无旁路
+- price_basis校验路径(21aee51):_assert_raw_unadjusted覆盖Service所有daily_bar读取入口、无旁路
+- 信号防泄露结构隔离(1d9a177):信号函数确无未来收益通路、LabelDataPortal与信号双向隔离
+- 执行层零改动核实(1b1affc):动量信号接入后执行/账本/CA/runner层确未改动
 
 ---
 
