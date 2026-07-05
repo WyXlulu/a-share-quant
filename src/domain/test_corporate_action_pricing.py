@@ -11,7 +11,7 @@ from src.domain.corporate_action_pricing import (
 
 
 class CorporateActionReferencePriceRuleTest(unittest.TestCase):
-    """Official formula source: SSE 2023 rule 4.3.2 and SZSE 2023 rule 4.4.2."""
+    """Official formula source: SZSE 2011/2013 rule 4.4.2 and SSE/SZSE 2023 rules."""
 
     def test_cash_dividend_uses_official_formula(self) -> None:
         # ((10.00 - 1.00) + 0 * 0) / (1 + 0 + 0) = 9.00
@@ -103,13 +103,43 @@ class CorporateActionReferencePriceRuleTest(unittest.TestCase):
             Decimal("100") / Decimal("13"),
         )
 
+    def test_2017_ex_right_date_uses_historical_official_formula(self) -> None:
+        # Historical official formula, SZSE 2011 rule 4.4.2:
+        # ((10.00 - 0.50) + 0 * 0) / (1 + 0 + 0) = 9.50.
+        self.assertEqual(
+            calculate_ex_right_reference_price(
+                date(2017, 6, 1),
+                Decimal("10.00"),
+                Decimal("0.50"),
+                Decimal("0"),
+                Decimal("0"),
+                Decimal("0"),
+            ),
+            Decimal("9.50"),
+        )
+
+    def test_2012_backtest_window_date_uses_historical_official_formula(self) -> None:
+        # Historical official formula, SZSE 2011 rule 4.4.2:
+        # ((12.00 - 0) + 6.00 * 0.5) / (1 + 0 + 0.5) = 10.00.
+        self.assertEqual(
+            calculate_ex_right_reference_price(
+                date(2012, 5, 21),
+                Decimal("12.00"),
+                Decimal("0"),
+                Decimal("0"),
+                Decimal("0.5"),
+                Decimal("6.00"),
+            ),
+            Decimal("1E+1"),
+        )
+
     def test_pricing_before_earliest_known_rule_fails_closed(self) -> None:
         with self.assertRaisesRegex(
             CorporateActionPricingRuleError,
-            "earliest_known_effective_date=2023-02-17",
+            "earliest_known_effective_date=2011-02-28",
         ):
             calculate_ex_right_reference_price(
-                date(2023, 2, 16),
+                date(2011, 2, 27),
                 Decimal("10.00"),
                 Decimal("0"),
                 Decimal("0"),

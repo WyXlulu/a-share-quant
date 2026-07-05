@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-# Sources retrieved on 2026-07-03:
+# Sources retrieved on 2026-07-03 and 2026-07-05:
+# - Shenzhen Stock Exchange Trading Rules (2011 revision), section 4.4.2,
+#   effective 2011-02-28.
+#   http://www.szse.cn/lawrules/rule/repeal/rules/P020231230545287939887.pdf
+# - Shenzhen Stock Exchange Trading Rules (2013 revision), section 4.4.2.
+#   http://www.szse.cn/lawrules/rule/repeal/rules/P020231230545239660417.pdf
 # - 上海证券交易所交易规则（2023年修订）, section 4.3.2
 #   https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20250519_10779396.shtml
 # - 深圳证券交易所交易规则（2023年修订）, section 4.4.2
@@ -32,6 +37,18 @@ class CorporateActionReferencePriceRule:
 
 
 KNOWN_REFERENCE_PRICE_RULES: tuple[CorporateActionReferencePriceRule, ...] = (
+    CorporateActionReferencePriceRule(
+        effective_date=date(2011, 2, 28),
+        version="cn_a_share_ex_right_reference_price_2011",
+        source_name="Shenzhen Stock Exchange Trading Rules (2011 revision), section 4.4.2",
+        source_url="http://www.szse.cn/lawrules/rule/repeal/rules/P020231230545287939887.pdf",
+    ),
+    CorporateActionReferencePriceRule(
+        effective_date=date(2013, 7, 29),
+        version="cn_a_share_ex_right_reference_price_2013",
+        source_name="Shenzhen Stock Exchange Trading Rules (2013 revision), section 4.4.2",
+        source_url="http://www.szse.cn/lawrules/rule/repeal/rules/P020231230545239660417.pdf",
+    ),
     CorporateActionReferencePriceRule(
         effective_date=date(2023, 2, 17),
         version="cn_a_share_ex_right_reference_price_2023",
