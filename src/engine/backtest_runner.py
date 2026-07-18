@@ -19,6 +19,10 @@ from src.data.pit_data_portal import (
     _mask_security_master_future_fields,
     _parse_asia_shanghai_timestamp,
 )
+from src.data.corporate_action_availability import (
+    materialize_explicit_ca_available_at,
+    resolve_ca_available_at,
+)
 from src.domain import TradeStatus
 from src.engine.corporate_action_handler import CorporateActionHandler
 from src.engine.dummy_strategy import DummyRebalanceStrategy
@@ -175,7 +179,7 @@ class BacktestRunner:
     ) -> None:
         self.config = config or BacktestConfig()
         self.calendar = calendar or load_trading_calendar(self.config.calendar_path)
-        self.portal = portal or CachedPITDataPortal(self.config.table_paths)
+        self.portal = portal or CachedPITDataPortal(self.config.table_paths, self.calendar)
 
     def run(self) -> BacktestResult:
         ledger = PortfolioLedger(
@@ -394,7 +398,7 @@ class BacktestRunner:
 def run_default_backtest(*, deterministic_check: bool = True) -> BacktestResult:
     config = BacktestConfig()
     calendar = load_trading_calendar(config.calendar_path)
-    portal = CachedPITDataPortal(config.table_paths)
+    portal = CachedPITDataPortal(config.table_paths, calendar)
     first = BacktestRunner(config, calendar=calendar, portal=portal).run()
     if not deterministic_check:
         return first
@@ -428,8 +432,12 @@ def write_backtest_outputs(result: BacktestResult) -> None:
 
 
 class CachedPITDataPortal(PITDataPortal):
-    def __init__(self, table_paths: dict[str, Path]) -> None:
-        super().__init__(table_paths)
+    def __init__(
+        self,
+        table_paths: dict[str, Path],
+        trading_calendar: TradingCalendar | None = None,
+    ) -> None:
+        super().__init__(table_paths, trading_calendar)
         object.__setattr__(self, "_table_cache", {})
         object.__setattr__(self, "_daily_by_security_cache", None)
 
@@ -478,13 +486,24 @@ class CachedPITDataPortal(PITDataPortal):
         return self._read_table("daily_bar_raw")
 
     def _prepare_table(self, table: str, rows: pd.DataFrame) -> pd.DataFrame:
-        if REQUIRED_VISIBILITY_COLUMN not in rows.columns:
-            raise ValueError(f"{table} is missing required {REQUIRED_VISIBILITY_COLUMN}")
-        prepared = rows.copy()
-        prepared["_available_at_parsed"] = pd.to_datetime(
-            prepared[REQUIRED_VISIBILITY_COLUMN],
-            errors="raise",
-        )
+        if table == "corporate_actions":
+            available_at = pd.Series(
+                [
+                    resolve_ca_available_at(row, self.trading_calendar)
+                    for _, row in rows.iterrows()
+                ],
+                index=rows.index,
+            )
+            prepared = materialize_explicit_ca_available_at(rows, available_at).copy()
+            prepared["_available_at_parsed"] = available_at
+        else:
+            if REQUIRED_VISIBILITY_COLUMN not in rows.columns:
+                raise ValueError(f"{table} is missing required {REQUIRED_VISIBILITY_COLUMN}")
+            prepared = rows.copy()
+            prepared["_available_at_parsed"] = pd.to_datetime(
+                prepared[REQUIRED_VISIBILITY_COLUMN],
+                errors="raise",
+            )
         if "event_ts" in prepared.columns:
             prepared["_event_ts_parsed"] = pd.to_datetime(prepared["event_ts"], errors="raise")
         if "trade_date" in prepared.columns:

@@ -9,6 +9,12 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from src.domain import DataContractError
+from src.market_calendar import TradingCalendar
+
+from .corporate_action_availability import (
+    materialize_explicit_ca_available_at,
+    resolve_ca_available_at,
+)
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -26,6 +32,7 @@ SECURITY_MASTER_COMPANION_SUFFIXES = ("available_at", "point_in_time_capability"
 @dataclass(frozen=True)
 class PITDataPortal:
     table_paths: dict[str, Path] = field(default_factory=lambda: DEFAULT_TABLE_PATHS.copy())
+    trading_calendar: TradingCalendar | None = None
 
     def query(
         self,
@@ -39,9 +46,22 @@ class PITDataPortal:
 
         asof = _parse_asia_shanghai_timestamp(asof_ts, "asof_ts")
         rows = self._read_table(table)
-        self._assert_available_at(rows, table)
-
-        available_at = _parse_timestamp_series(rows[REQUIRED_VISIBILITY_COLUMN], table, REQUIRED_VISIBILITY_COLUMN)
+        if table == "corporate_actions":
+            available_at = pd.Series(
+                [
+                    resolve_ca_available_at(row, self.trading_calendar)
+                    for _, row in rows.iterrows()
+                ],
+                index=rows.index,
+            )
+            rows = materialize_explicit_ca_available_at(rows, available_at)
+        else:
+            self._assert_available_at(rows, table)
+            available_at = _parse_timestamp_series(
+                rows[REQUIRED_VISIBILITY_COLUMN],
+                table,
+                REQUIRED_VISIBILITY_COLUMN,
+            )
         visible = rows.loc[available_at.le(asof)].copy()
 
         if table == "daily_bar_raw" and "event_ts" in visible.columns:
