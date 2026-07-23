@@ -222,3 +222,4 @@ data/l1_raw/*.parquet
 data/l2_corporate_actions/*.parquet
 data/quarantine/**/*.parquet
 data/backtest_output/
+data/golden_slice/
