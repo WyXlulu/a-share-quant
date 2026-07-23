@@ -270,3 +270,11 @@
 - 防线证据:泄露堵截测试用T日asof(2026-01-02)返回算不出、正确性测试用T+22 asof(2026-02-03)才产出,两asof不同,泄露被架构堵死非手算自洽;补强测试钉死出场日盘中13:00标签仍未成熟;open_to_open含CA开盘窗口独立手算算例(参考价9.00/因子0.9/收益0.1)验证CA场景复权正确。
 - 顺带:IC层补price_basis==PIT_DERIVED校验(审计C类),给已过审PITAdjustmentService加开盘方法带回归锁(收盘口径reference=9.00逐值不变,144零回归)。
 - taint:全程EXPLORATORY_TAINTED,标签计算器解锁的是"能从真实价格算标签"的能力,不是数据可信度升级。
+
+## 2026-07-22 | 巨潮披露时刻缺失取证与黄金切片available_at方案X
+- 取证结论:巨潮历史公告接口的`announcementTime`对149条黄金切片待核验公告中147条仅保留日期级零点,仅`000333`的2条2024年近期公告保留秒级时刻;扫描12只票三通道共7995条原始公告记录,未发现`storageTime`、`pubTime`等可替代的精确披露时间字段。历史精确披露时刻从该接口不可得。
+- 决定:黄金切片公司行动将`disclosure_date`与`disclosure_time_known`拆分。`disclosure_time_known=False`时,以真实`TradingCalendar`将`available_at`派生为披露日次一交易日09:30(Asia/Shanghai);若派生值`>= ex_date`,立即fail-closed抛`DataContractError`交人工核验,本阶段不建BLOCK降级机制。
+- 单源约束:`resolve_ca_available_at`是唯一派生实现,核心`PITDataPortal`与`CachedPITDataPortal`共同调用,从结构上防止快慢路径分叉泄露。实现见`a8a2a71`;全库162测试全绿,十年回测order/fill/corporate_action/nav四类账本哈希逐字节不变,`601318`的2015年旧记录因缺少`disclosure_*`字段继续走旧`available_at`路径,行为不变。
+- 待办③:面向全市场台账可信化时再建设不可验证可见性的优雅BLOCK传播机制,并补`disclosure_time_known=True`路径的`available_at >= ex_date`越界检查;本次黄金切片小样本由人工在场、越界直接报错。
+- `601318`异常记录:2015-09-09记录满足`ex_date == announcement_date`,但`record_date=2015-09-08`早于`announcement_date`,业务时序不成立,强烈指向akshare的`announcement_date`口径错误。该判断仍属疑似,未经2015年官方PDF闭环确认;记录属于全市场`EXPLORATORY_TAINTED`台账,不进入黄金切片,不阻塞冻结。
+- Verified absence:12只黄金切片证券在冻结窗口内`配股=0`、`转增=0`、`送股=0`;该切片为纯现金分红场景,EX-012拆股路径不触发。
