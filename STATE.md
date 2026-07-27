@@ -6,7 +6,7 @@
 
 ## 当前阶段
 
-Phase 2 第三步(黄金切片)块3人工核验进行中;块1标签生产计算器、块2a manifest骨架与方案X available_at已收官,当前162测试全绿
+Phase 2 第三步(黄金切片):块1标签计算器、块2a manifest骨架、方案X available_at派生、块3取证与人工核验及冻结均已收官;当前进入块4(在冻结切片上跑标签→信号→IC,产出GOLDEN_SLICE_PIPELINE结果)。当前167测试全绿,冻结代码基线=26f4ee4
 
 ---
 
@@ -14,22 +14,20 @@ Phase 2 第三步(黄金切片)块3人工核验进行中;块1标签生产计算�
 - [x] 第一步 PIT复权服务:参考价模块(08f8c24)、组合测试(a430796)、execution迁移兑现决策1(6c044b5)、PITAdjustmentService本体+可见性同源(968cb10)、asof口径修正(f4c012e)、price_basis+五组哨兵(21aee51)
 - [x] 第二步 截面动量:信号本体(ec53288)、IC评估+LabelDataPortal隔离(1d9a177)、信号驱动策略接执行边界执行层零改动(1b1affc)
 - [x] 全库审计尾款:F1/C-CRITICAL/F4三项健壮性修复(7ccee46/bea596a)、参考价切点退至2011-02-28(eefb1c5)
-- [x] 全库审计通过:克隆级技术深审+操作层清册+十年回测回归(四类账本哈希与f29d083逐字节一致,Phase 2未动摇Phase 1地基);当前162测试全绿
+- [x] 全库审计通过:克隆级技术深审+操作层清册+十年回测回归(四类账本哈希与f29d083逐字节一致,Phase 2未动摇Phase 1地基);Phase 2前两步审计结论保持有效
+- [x] 黄金切片块1-3收官:标签计算器、manifest治理、方案X available_at、官方PDF人工核验与76条CA台账冻结均已完成(26f4ee4);当前167测试全绿
 
 ---
 
 ## 进行中
 
-- [x] 黄金切片块1:标签生产计算器已建,标签收益唯一走PITAdjustmentService开盘口径复权
-- [x] 黄金切片块2a:manifest骨架、冻结hash机制、NaT-CA fail-closed与待人工核验清单已建
-- [x] 黄金切片available_at方案X:时刻未知经真实TradingCalendar派生为次一交易日09:30,核心/缓存Portal共用单一resolver
-- [ ] 黄金切片块3:逐条阅读巨潮PDF原文,双向核验12只证券纯现金分红台账并回填核验槽位
+- [ ] 黄金切片块4:端到端运行与验证(设计待定)
 
 ---
 
 ## 下一步
 
-第三步:黄金切片(十几只可人工核验超大盘股+冻结窗口,排除5只次新股001280/688047/688506/688521/688981,手工双核验L2台账,目标首个BACKTEST_VALIDATED/GOLDEN_SLICE_PIPELINE)。黄金切片前置清单(审计发现,进切片前处置):①标签生产计算器未建(LabelDataPortal是读取器非计算器,真实IC需从价格算起)②无ex_date的CA在NaT组被静默丢弃(台账补MERGER/DELIST前修)③信号/IC层不校验下游price_basis(靠注入服务守约)
+黄金切片块4:在冻结的76条CA台账与12只票窗口上,跑通标签→截面动量→RankIC评估;运行前必须调用`assert_frozen_and_consistent`,通过治理门禁后产出`validation_scope=GOLDEN_SLICE_PIPELINE`的报告。黄金切片证明的是管线诚实,不是策略有效;RankIC接近0或置信区间跨0不影响“管线诚实”结论成立,也不得据此升级为alpha证据。
 
 ---
 
@@ -44,6 +42,8 @@ Phase 2 第三步(黄金切片)块3人工核验进行中;块1标签生产计算�
 - 执行层 Windows 环境尚未确定（本机 / VM / 云）
 - 券商档位待定，取决于计划投入本金
 - 历史时点 ST 状态仍需更完整 PIT 数据源补齐（如 Tushare）
+- 全市场CA台账可信化待办:建设不可验证可见性的优雅BLOCK传播机制,并补`disclosure_time_known=True`路径的`available_at >= ex_date`越界检查。
+- `601318`的2015-09-09记录疑似`announcement_date`口径错误(`record_date`早于`announcement_date`),尚未经2015年官方PDF闭环确认;不进入黄金切片。
 - 沪深主板ST/*ST涨跌幅限制自2026-07-06起由±5%调整为±10%。当前仅完成web多源确认:沪深北交易所于2026-04-24同步修订交易规则,其中该项变化适用于沪深主板;尚缺交易所公告文号的一手直引。黄金切片无ST且窗口不跨该日,不触发;全市场回测跨该日时须按生效日切换涨跌停判定。
 
 ---
