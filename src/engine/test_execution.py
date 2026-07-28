@@ -5,14 +5,23 @@ import unittest
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
 from src.market_calendar import trading_calendar_from_dates
 from src.data import PITDataPortal
-from src.domain import TradeStatus
-from src.engine import FeeSchedule, FillLedgerEntry, LockedOrder, OrderIntent, T1OpenExecutor
+from src.domain import TradeStatus, calculate_ex_right_reference_price
+from src.engine import (
+    CorporateActionHandler,
+    FeeSchedule,
+    FillLedgerEntry,
+    LockedOrder,
+    OrderIntent,
+    T1OpenExecutor,
+)
 from src.engine.execution import FeeScheduleError
+from src.engine.portfolio_ledger import CashState, PortfolioLedger, PositionLot, PositionState
 
 
 class T1OpenExecutorTest(unittest.TestCase):
@@ -237,6 +246,104 @@ class T1OpenExecutorTest(unittest.TestCase):
             self.assertEqual(fill.reason, "LIMIT_UP_NO_BUY")
             self.assertEqual(fill.execution_price, 1302.49)
             self.assertEqual(fill.limit_reference_status, "LIMIT_REF_ADJUSTED_FOR_CA")
+
+    def test_cash_ledger_and_limit_reference_route_actual_and_deduction_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            decision_date = date(2021, 8, 20)
+            ex_date = date(2021, 8, 23)
+            calendar = trading_calendar_from_dates(
+                [decision_date, ex_date, date(2021, 8, 24)]
+            )
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row(
+                        "000651",
+                        "2021-08-20",
+                        open_price=10.0,
+                        high=10.0,
+                        low=10.0,
+                        close=10.0,
+                    ),
+                    _bar_row(
+                        "000651",
+                        "2021-08-23",
+                        open_price=7.22,
+                        high=7.22,
+                        low=7.22,
+                        close=7.22,
+                    ),
+                ],
+                security_master_rows=[
+                    _security_master_row("000651", board="主板", list_date="1996-11-18"),
+                ],
+                corporate_action_rows=[
+                    _corporate_action_row(
+                        "000651",
+                        "2021-08-23",
+                        "CASH_DIVIDEND",
+                        cash_dividend_per_share=3.0,
+                        ex_right_cash_deduction_per_share=2.784787,
+                        available_at="2021-08-16T09:30:00+08:00",
+                    )
+                ],
+            )
+            ledger = PortfolioLedger(
+                CashState(),
+                calendar=calendar,
+                positions={
+                    "000651": PositionState(
+                        "000651",
+                        lots=[
+                            PositionLot(
+                                quantity=100,
+                                cost_basis=Decimal("1000.00"),
+                                trade_date=date(2021, 8, 19),
+                                sellable_from=decision_date,
+                                is_unlocked=True,
+                            )
+                        ],
+                    )
+                },
+            )
+
+            CorporateActionHandler(calendar, portal).process_day(ledger, ex_date)
+            executor = T1OpenExecutor(calendar, portal, end_date=ex_date)
+            with patch(
+                "src.engine.execution.calculate_ex_right_reference_price",
+                wraps=calculate_ex_right_reference_price,
+            ) as pricing_formula:
+                locked = executor.lock_order(
+                    _intent("000651", decision_date, side="buy"),
+                    available_cash=Decimal("2000.00"),
+                )
+
+            self.assertEqual(ledger.cash.receivable_cash, Decimal("300.00"))
+            self.assertEqual(
+                ledger.pending_cash_dividends[("000651", ex_date)],
+                Decimal("300.00"),
+            )
+            self.assertIsInstance(locked, LockedOrder)
+            self.assertEqual(pricing_formula.call_args.args[2], Decimal("2.784787"))
+            self.assertEqual(locked.reference_price, Decimal("7.22"))
+
+    def test_missing_ex_right_cash_deduction_column_uses_legacy_cash_field(self) -> None:
+        locked, pricing_cash = _lock_cash_dividend_reference(
+            ex_right_cash_deduction_per_share=_EX_RIGHT_COLUMN_MISSING
+        )
+
+        self.assertEqual(pricing_cash, Decimal("0.30"))
+        self.assertEqual(locked.reference_price, Decimal("9.70"))
+
+    def test_null_ex_right_cash_deduction_uses_legacy_cash_field(self) -> None:
+        for null_value in (None, float("nan")):
+            with self.subTest(null_value=null_value):
+                locked, pricing_cash = _lock_cash_dividend_reference(
+                    ex_right_cash_deduction_per_share=null_value
+                )
+
+                self.assertEqual(pricing_cash, Decimal("0.30"))
+                self.assertEqual(locked.reference_price, Decimal("9.70"))
 
     def test_ex_right_stock_dividend_limit_reference_uses_share_ratio(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -663,6 +770,59 @@ def _run_executor() -> list[FillLedgerEntry]:
         return executor.execute([_intent("000001", date(2026, 6, 29))])
 
 
+_EX_RIGHT_COLUMN_MISSING = object()
+
+
+def _lock_cash_dividend_reference(
+    *,
+    ex_right_cash_deduction_per_share: float | None | object,
+) -> tuple[LockedOrder, Decimal]:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        action = _corporate_action_row(
+            "000001",
+            "2026-06-30",
+            "CASH_DIVIDEND",
+            cash_dividend_per_share=0.30,
+            ex_right_cash_deduction_per_share=ex_right_cash_deduction_per_share,
+            available_at="2026-06-29T15:00:00+08:00",
+        )
+        portal = _portal(
+            tmpdir,
+            [
+                _bar_row(
+                    "000001",
+                    "2026-06-29",
+                    open_price=10.0,
+                    high=10.0,
+                    low=10.0,
+                    close=10.0,
+                ),
+                _bar_row(
+                    "000001",
+                    "2026-06-30",
+                    open_price=9.7,
+                    high=9.7,
+                    low=9.7,
+                    close=9.7,
+                ),
+            ],
+            corporate_action_rows=[action],
+        )
+        executor = T1OpenExecutor(_calendar(), portal, end_date=date(2026, 6, 30))
+        with patch(
+            "src.engine.execution.calculate_ex_right_reference_price",
+            wraps=calculate_ex_right_reference_price,
+        ) as pricing_formula:
+            locked = executor.lock_order(
+                _intent("000001", date(2026, 6, 29), side="buy"),
+                available_cash=Decimal("2000.00"),
+            )
+
+        if not isinstance(locked, LockedOrder):
+            raise AssertionError(f"expected LockedOrder, observed {type(locked).__name__}")
+        return locked, pricing_formula.call_args.args[2]
+
+
 def _calendar():
     return trading_calendar_from_dates([date(2026, 6, 29), date(2026, 6, 30)])
 
@@ -770,10 +930,11 @@ def _corporate_action_row(
     action_type: str,
     *,
     cash_dividend_per_share: float = 0.0,
+    ex_right_cash_deduction_per_share: float | None | object = _EX_RIGHT_COLUMN_MISSING,
     share_ratio: float = 0.0,
     available_at: str,
 ) -> dict[str, object]:
-    return {
+    row = {
         "security_id": security_id,
         "ex_date": f"{ex_date}T00:00:00+08:00",
         "action_type": action_type,
@@ -784,6 +945,9 @@ def _corporate_action_row(
         "source_id": "fixture",
         "snapshot_id": "fixture",
     }
+    if ex_right_cash_deduction_per_share is not _EX_RIGHT_COLUMN_MISSING:
+        row["ex_right_cash_deduction_per_share"] = ex_right_cash_deduction_per_share
+    return row
 
 
 if __name__ == "__main__":

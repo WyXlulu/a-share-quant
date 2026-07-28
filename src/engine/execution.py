@@ -968,6 +968,7 @@ def _limit_prices(previous_close: float, limit_rate: Decimal) -> tuple[float, fl
 
 def _corporate_action_adjustments(actions: pd.DataFrame) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     cash_dividend = Decimal("0.00")
+    uses_ex_right_cash_deduction = False
     share_ratio = Decimal("0.00")
     rights_ratio = Decimal("0.00")
     rights_consideration = Decimal("0.00")
@@ -981,12 +982,25 @@ def _corporate_action_adjustments(actions: pd.DataFrame) -> tuple[Decimal, Decim
             continue
         if action_type not in ("CASH_DIVIDEND", "STOCK_DIVIDEND"):
             continue
-        cash_dividend += _decimal_or_zero(getattr(row, "cash_dividend_per_share"))
+        ex_right_cash_deduction = getattr(
+            row,
+            "ex_right_cash_deduction_per_share",
+            None,
+        )
+        if pd.isna(ex_right_cash_deduction):
+            cash_value = getattr(row, "cash_dividend_per_share")
+        else:
+            cash_value = ex_right_cash_deduction
+            uses_ex_right_cash_deduction = True
+        cash_dividend += _decimal_or_zero(cash_value)
         share_ratio += _decimal_or_zero(getattr(row, "share_ratio"))
     rights_price = Decimal("0.00")
     if rights_ratio > Decimal("0"):
         rights_price = rights_consideration / rights_ratio
-    return _money(cash_dividend), share_ratio, rights_ratio, rights_price
+    reference_cash_dividend = (
+        cash_dividend if uses_ex_right_cash_deduction else _money(cash_dividend)
+    )
+    return reference_cash_dividend, share_ratio, rights_ratio, rights_price
 
 
 def _latest_corporate_action_rows(actions: pd.DataFrame) -> pd.DataFrame:
