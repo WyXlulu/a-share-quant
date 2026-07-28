@@ -1,0 +1,20 @@
+{
+  "audit_status": "PENDING_AUDIT",
+  "entry": "T+1 open",
+  "evaluation_asof_ts": "2024-01-31T15:00:00+08:00",
+  "evidence_status": "EXPLORATORY_TAINTED",
+  "exit": "T+22 open",
+  "immature_label_count_in_ic": 0,
+  "label": "forward_21d_t1_to_t22_open_pit_adjusted_return",
+  "label_count": 11640,
+  "label_derivation_asof_policy": "each label uses its own exit date T+22 at 15:00 Asia/Shanghai inside calculate_future_return_labels",
+  "label_status_counts": {
+    "NOT_TRADABLE_ENTRY": 11,
+    "NOT_TRADABLE_EXIT": 11,
+    "NO_DATA": 31,
+    "OK": 11587
+  },
+  "missing_label_count_in_ic": 31,
+  "validation_scope": "GOLDEN_SLICE_PIPELINE",
+  "validation_scope_manifest_hash": "94e025b6a0b259c56751c6d3f3953c4a804aeea1c85b3b73dac9f9b2f468d4ae"
+}

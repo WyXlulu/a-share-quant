@@ -1,0 +1,65 @@
+{
+  "audit_status": "PENDING_AUDIT",
+  "ca_row_count": 76,
+  "created_at": "2026-07-28T12:54:19+08:00",
+  "evidence_status": "EXPLORATORY_TAINTED",
+  "execution_use_prohibited": true,
+  "experiment_id": "golden_slice_momentum_ic_20260728_94e025b6",
+  "fast_slow_sample_equivalence": {
+    "compared_point_fields": [
+      "trade_date",
+      "status",
+      "reference_price",
+      "adjusted_return",
+      "raw_close",
+      "ca_on_date",
+      "block_reason"
+    ],
+    "end_date": "2020-06-05",
+    "full_series_metadata_equal": true,
+    "includes_ca_ex_date": "2020-05-25",
+    "security_id": "600276",
+    "start_date": "2020-05-11",
+    "status": "PASS",
+    "trading_day_count": 20
+  },
+  "l1_row_count": 15516,
+  "l1_rows_by_security": {
+    "000333": 1293,
+    "000651": 1293,
+    "000858": 1293,
+    "600028": 1293,
+    "600036": 1293,
+    "600276": 1293,
+    "600519": 1293,
+    "600900": 1293,
+    "601318": 1293,
+    "601398": 1293,
+    "601668": 1293,
+    "601939": 1293
+  },
+  "portal": "CachedPITDataPortal",
+  "price_basis": "RAW_UNADJUSTED",
+  "snapshot_hashes": {
+    "corporate_actions_sha256": "8e291f5b62bba016b9a35ecf2429f32bd50f4c6afa663d4ad550ef8ac572b93f",
+    "daily_bar_raw_sha256": "f3f37cc38bd2c91a3217f4486bc50ccadc28fbcd44be10269a2d3efba997f099"
+  },
+  "snapshot_id": "golden_slice_2026-07-28_ADJUSTMENT_ONLY",
+  "snapshot_paths": {
+    "corporate_actions": "artifacts/golden_slice_momentum_ic_20260728_94e025b6/snapshot/corporate_actions.parquet",
+    "daily_bar_raw": "artifacts/golden_slice_momentum_ic_20260728_94e025b6/snapshot/daily_bar_raw.parquet",
+    "predictions": "artifacts/golden_slice_momentum_ic_20260728_94e025b6/predictions.parquet"
+  },
+  "snapshot_purpose": "ADJUSTMENT_ONLY",
+  "source_paths": {
+    "akshare_l2_cross_check": "data/l2_corporate_actions/corporate_actions.parquet",
+    "frozen_manifest": "src/golden_slice/golden_slice_manifest.json",
+    "l1_daily_bar": "data/l1_raw/daily_bar_raw.parquet",
+    "trading_calendar": "data/l1_raw/trading_calendar.parquet"
+  },
+  "source_snapshot_ids": [
+    "20260630_akshare_raw"
+  ],
+  "validation_scope": "GOLDEN_SLICE_PIPELINE",
+  "validation_scope_manifest_hash": "94e025b6a0b259c56751c6d3f3953c4a804aeea1c85b3b73dac9f9b2f468d4ae"
+}

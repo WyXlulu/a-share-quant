@@ -1,0 +1,259 @@
+{
+  "akshare_l2_cross_check": {
+    "akshare_key_count": 74,
+    "akshare_only": [],
+    "comparison_key": [
+      "security_id",
+      "ex_date"
+    ],
+    "range": {
+      "end": "2023-12-20",
+      "start": "2019-02-25"
+    },
+    "verified_key_count": 76,
+    "verified_only": [
+      {
+        "action_type": "CASH_DIVIDEND",
+        "cash_dividend_per_share": 21.91,
+        "ex_date": "2022-12-27",
+        "ex_right_cash_deduction_per_share": 21.91,
+        "security_id": "600519",
+        "share_ratio": 0.0,
+        "source_pdf_filename": "600519_2022-12-21_1.pdf"
+      },
+      {
+        "action_type": "CASH_DIVIDEND",
+        "cash_dividend_per_share": 19.106,
+        "ex_date": "2023-12-20",
+        "ex_right_cash_deduction_per_share": 19.106,
+        "security_id": "600519",
+        "share_ratio": 0.0,
+        "source_pdf_filename": "600519_2023-12-14_1.pdf"
+      }
+    ]
+  },
+  "audit_status": "PENDING_AUDIT",
+  "coverage": {
+    "maximum": "1",
+    "mean": "0.9973367697594501718213058430",
+    "minimum": "0.9166666666666666666666666667",
+    "zero_coverage_days": 0
+  },
+  "daily_adjusted_return_status": {
+    "blocked_count": 0,
+    "blocked_rate": "0",
+    "blocked_reason_counts": {},
+    "no_data_reason_counts": {
+      "MISSING_CLOSE_OR_PREVIOUS_CLOSE": 46
+    },
+    "per_security_status_counts": {
+      "000333": {
+        "NO_DATA": 14,
+        "OK": 1279
+      },
+      "000651": {
+        "NO_DATA": 9,
+        "OK": 1284
+      },
+      "000858": {
+        "NO_DATA": 1,
+        "OK": 1292
+      },
+      "600028": {
+        "NO_DATA": 1,
+        "OK": 1292
+      },
+      "600036": {
+        "NO_DATA": 1,
+        "OK": 1292
+      },
+      "600276": {
+        "NO_DATA": 1,
+        "OK": 1292
+      },
+      "600519": {
+        "NO_DATA": 1,
+        "OK": 1292
+      },
+      "600900": {
+        "NO_DATA": 14,
+        "OK": 1279
+      },
+      "601318": {
+        "NO_DATA": 1,
+        "OK": 1292
+      },
+      "601398": {
+        "NO_DATA": 1,
+        "OK": 1292
+      },
+      "601668": {
+        "NO_DATA": 1,
+        "OK": 1292
+      },
+      "601939": {
+        "NO_DATA": 1,
+        "OK": 1292
+      }
+    },
+    "point_count": 15516,
+    "status_counts": {
+      "NO_DATA": 46,
+      "OK": 15470
+    },
+    "window": {
+      "end": "2024-02-29",
+      "start": "2018-11-01"
+    }
+  },
+  "evidence_status": "EXPLORATORY_TAINTED",
+  "hengrui_reference_price_check": {
+    "action_type": "STOCK_DIVIDEND",
+    "cash_deduction": "0.23",
+    "denominator": "1.2",
+    "ex_date": "2020-05-25",
+    "hand_calculated_reference_price": "79.70833333333333333333333333",
+    "previous_close": "95.88",
+    "previous_trading_day": "2020-05-22",
+    "security_id": "600276",
+    "service_reference_price": "79.70833333333333333333333333",
+    "share_ratio": "0.2"
+  },
+  "labels": {
+    "immature_label_count_in_ic": 0,
+    "label_count": 11640,
+    "missing_label_count_in_ic": 31,
+    "status_counts": {
+      "NOT_TRADABLE_ENTRY": 11,
+      "NOT_TRADABLE_EXIT": 11,
+      "NO_DATA": 31,
+      "OK": 11587
+    }
+  },
+  "portal_runtime": {
+    "cached_pipeline_elapsed_seconds": "4146.727554900004",
+    "fast_slow_sample_equivalence": {
+      "compared_point_fields": [
+        "trade_date",
+        "status",
+        "reference_price",
+        "adjusted_return",
+        "raw_close",
+        "ca_on_date",
+        "block_reason"
+      ],
+      "end_date": "2020-06-05",
+      "full_series_metadata_equal": true,
+      "includes_ca_ex_date": "2020-05-25",
+      "security_id": "600276",
+      "start_date": "2020-05-11",
+      "status": "PASS",
+      "trading_day_count": 20
+    },
+    "full_pipeline_portal": "CachedPITDataPortal",
+    "standard_portal_interrupted_run": {
+      "cpu_seconds": "6094.65625",
+      "reason": "standard PITDataPortal daily full-chain run was healthy but too slow for observable completion",
+      "status": "INTERRUPTED_BY_OPERATOR",
+      "wall_seconds": "6164.9168309"
+    },
+    "timing_comparison_caveat": "The standard run was interrupted before completion, while cached elapsed is wall time and includes any host suspension; the two values do not define a benchmark speedup ratio."
+  },
+  "rank_ic": {
+    "ci_available": true,
+    "ci_bounds": [
+      "0.005179871674717035541777809915",
+      "0.1976459279552063057217696397"
+    ],
+    "ci_method": "moving_block_bootstrap_non_iid(block_length=21,iterations=500)",
+    "icir": "0.24903428484025386",
+    "quantile_monotonicity": "NOT_MONOTONIC",
+    "quantile_returns": [
+      {
+        "mean_future_return": "0.008025674220778487939817183308",
+        "quantile": 1,
+        "sample_count": 2811
+      },
+      {
+        "mean_future_return": "0.01384747741143839734903297161",
+        "quantile": 2,
+        "sample_count": 1940
+      },
+      {
+        "mean_future_return": "-0.001224717707053803271525953574",
+        "quantile": 3,
+        "sample_count": 2197
+      },
+      {
+        "mean_future_return": "-0.004863669203119851236766145656",
+        "quantile": 4,
+        "sample_count": 1940
+      },
+      {
+        "mean_future_return": "-0.002794308751097897955072961484",
+        "quantile": 5,
+        "sample_count": 1940
+      }
+    ],
+    "rank_ic_mean": "0.1093038233244418811429120707",
+    "valid_day_count": 970
+  },
+  "scheme_x_samples": [
+    {
+      "derived_available_at": "2019-05-24T09:30:00+08:00",
+      "disclosure_date": "2019-05-23",
+      "ex_date": "2019-05-30",
+      "security_id": "000333",
+      "source_pdf_filename": "000333_2019-05-23_1.pdf"
+    },
+    {
+      "derived_available_at": "2020-05-20T09:30:00+08:00",
+      "disclosure_date": "2020-05-19",
+      "ex_date": "2020-05-25",
+      "security_id": "600276",
+      "source_pdf_filename": "600276_2020-05-19_1.pdf"
+    },
+    {
+      "derived_available_at": "2023-07-10T09:30:00+08:00",
+      "disclosure_date": "2023-07-08",
+      "ex_date": "2023-07-14",
+      "security_id": "601939",
+      "source_pdf_filename": "601939_2023-07-08_1.pdf"
+    }
+  ],
+  "signal": {
+    "average_scorable_security_count": "11.19484536082474226804123711",
+    "maximum_scorable_security_count": 12,
+    "minimum_scorable_security_count": 10,
+    "signal_day_count": 970
+  },
+  "snapshot": {
+    "ca_row_count": 76,
+    "l1_row_count": 15516,
+    "l1_rows_by_security": {
+      "000333": 1293,
+      "000651": 1293,
+      "000858": 1293,
+      "600028": 1293,
+      "600036": 1293,
+      "600276": 1293,
+      "600519": 1293,
+      "600900": 1293,
+      "601318": 1293,
+      "601398": 1293,
+      "601668": 1293,
+      "601939": 1293
+    },
+    "snapshot_id": "golden_slice_2026-07-28_ADJUSTMENT_ONLY",
+    "source_snapshot_ids_preserved": [
+      "20260630_akshare_raw"
+    ]
+  },
+  "statistical_limitations": [
+    "Only 12 securities are present in the cross-section.",
+    "Daily RankIC has a very small cross-sectional sample and high noise.",
+    "The non-IID block bootstrap uses block=21; its interval remains fragile at this universe size."
+  ],
+  "validation_scope": "GOLDEN_SLICE_PIPELINE",
+  "validation_scope_manifest_hash": "94e025b6a0b259c56751c6d3f3953c4a804aeea1c85b3b73dac9f9b2f468d4ae"
+}
