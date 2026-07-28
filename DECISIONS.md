@@ -322,3 +322,20 @@
 - 含义:①人工核验未漏任何akshare已记录的事件(0条方向的空集);②akshare台账确实存在缺口,且缺的是金额显著的特别分红——茅台这两次每股派息量级与年度分红相当,遗漏会使跨该除权日的收益严重失真。
 - 这与此前中石化6条(列表页标题措辞差异导致取证遗漏)是不同性质的缺口:中石化是我方取证关键词不全,茅台这2条是数据源本身未收录。
 - 全市场台账可信化时,须假定akshare对特别分红类事件存在系统性遗漏,不得以“台账无记录”推断“无事件”。
+
+## 2026-07-28 | 黄金切片块4b完成:执行层与CA账本在人工核验台账上验证(a0f918d)
+- 前置修复:f30cd6c修正执行层双字段路由——execution.py的除权参考价改读ex_right_cash_deduction_per_share(折算扣减值)、缺列/None/NaN时回退cash_dividend_per_share;corporate_action_handler.py不改,现金账本继续消费cash_dividend_per_share(实际派发值)。十年四类账本哈希逐字节不变(3075条老台账无新列全走回退),172测试全绿。
+- snapshot:golden_slice_2026-07-28_EXECUTION,三表(L1 15,516行 / CA 76行 / security_master 12行)。双字段断言:22条两值不同、54条相同;最大差异000651 ex_date=2021-08-23(实际派发3.0 vs 折算2.784787)。
+- 信号复用:物理列投影仅加载signal_asof_ts/score_asof_ts/security_id/signal_status/momentum_score/cross_sectional_rank,未来收益、label、RankIC字段物理未加载。校验口径为ordered hash binding(970交易日与feature manifest的970个hash按序绑定),【非内容密码学校验】——predictions.parquet无hash列、feature manifest的hash数组无日期键、momentum_score写入时Decimal转float有损,无法无损重建原始hash载荷。
+- 执行:月度调仓(真实交易日历每月首个交易日,共48日)、等权top_n=3、初始资金1,000,000元。订单122、成交91、拒单31(全部CASH_INSUFFICIENT)、lot size调整0、总费用9978.63。净值恒等式最大偏差0.00。
+- 【双字段路由的最终兑现】确定性账本审计(不依赖策略碰巧持有,用预置持仓强制覆盖):000651/2021-08-23手算与账本均为1000×3.0=3000.00,【未使用折算值2.784787】;000651/2022-04-08为1000.00;000333/2023-06-01为2500.00。三条手算与账本逐值一致。这是人工核验发现"两个金额口径"→冻结台账双字段→执行层分流修复→真实回测正确取值的完整闭环。
+- 送股账本(恒瑞两次,ex_date 2020-05-25与2021-06-10;2019-03-28在回测起点前):share_delta=int(1000×0.2)=200股、总成本基10000.00前后不变、cost_basis_delta=0.00、每股成本10.00→8.333333(=10000/1200)、新股sellable_from=ex_date立即解锁。该语义与现有portfolio_ledger实现一致。
+- CA账本:主回测自然触发27条(分红应收13、简化到账13、送股1),UNPROCESSED_CA_count=0。
+- 【本步未验证的边界,不得被后续引用为已验证】
+  ① 执行路径覆盖不全:31条拒单全为CASH_INSUFFICIENT,涨跌停拒单、停牌不成交、容量截断、缺开盘价、lot size调整在本次回测中【一次未触发】。未触发≠已验证,这些路径在黄金切片上无实证。
+  ② broker_profile缺失:仓库无broker_profile实现,本步使用Phase 1默认FeeSchedule测试口径。§12.3第6条(成交、成本、容量、公司行动与未成交订单纳入净值)【未完全满足】。
+  ③ 派息支付时序:现金到账采用既有"除权后次一交易日"简化(corporate_action_handler实现),非官方发放日。本步仅验证应收金额路由,支付时序未验证。
+  ④ 历史ST状态:security_master的is_st/status为CURRENT_SNAPSHOT_ONLY污染字段,不能证明12票在2020-2023全程非ST。"窗口内非ST"是冻结选样假设(选样以超大盘蓝筹、历史未被风险警示为标准),【未经PIT ST数据验证】;历史ST涨跌停切换本轮不验证。
+  ⑤ 输入数据洁净度:L1价格仍来自akshare_raw快照,仅CA台账经人工核验。准确表述为"在人工核验CA台账上的执行层验证",【不得称全部输入数据已干净】。
+- 状态三元组:evidence_status=EXPLORATORY_TAINTED、audit_status=PENDING_AUDIT、validation_scope=GOLDEN_SLICE_PIPELINE、validation_scope_manifest_hash=冻结hash。不产出任何业绩结论(未计算年化/夏普/回撤/胜率,未生成净值曲线)。
+- 测试172→178全绿。核心执行/账本/CA handler、冻结manifest、4a工件均未改动。
