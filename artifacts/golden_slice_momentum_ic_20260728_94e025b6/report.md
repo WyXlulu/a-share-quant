@@ -108,3 +108,20 @@ None.
 |---|---|---|---:|---:|---|
 | 600519 | 2022-12-27 | CASH_DIVIDEND | 21.91 | 0.0 | 600519_2022-12-21_1.pdf |
 | 600519 | 2023-12-20 | CASH_DIVIDEND | 19.106 | 0.0 | 600519_2023-12-14_1.pdf |
+
+## Post-Audit Statistical Addendum
+
+- Survivorship bias remains unresolved. The 12 securities were selected from
+  current CSI 300 constituents; `data/l1_raw/manifest.json` marks the source
+  `EXPLORATORY_TAINTED` and not point-in-time membership. This survivorship and
+  current-constituent contamination was not propagated into the artifact.
+- `NOT_MONOTONIC` is an artifact of the quantile remainder-allocation rule, not
+  a data fact (see the 2026-07-28 correction in `DECISIONS.md`). Under another
+  equally reasonable rule that assigns remainders to middle buckets, the first
+  three buckets are monotonic. With only 10-12 securities split into five
+  buckets, quantiles are not well-defined and this metric must not be
+  interpreted.
+- The block-bootstrap interval `[0.0052, 0.1976]` excludes zero at block length
+  21, but that conclusion is fully sensitive to `CI_BLOCK_LENGTH`: intervals
+  at block lengths 42, 63, and 126 all cross zero. The non-crossing interval is
+  not evidence of statistical significance.

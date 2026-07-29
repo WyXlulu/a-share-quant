@@ -115,3 +115,18 @@ For stock dividends the asserted semantics are: total cost basis unchanged,
   simplification, not an official payment-date validation.
 - L1 remains `akshare_raw`; only the frozen CA ledger is manually verified from
   official PDFs.
+- Execution-path coverage is incomplete. All 31 rejected orders were
+  `CASH_INSUFFICIENT`; limit-up/down rejection, suspension non-execution,
+  capacity capping, missing-open rejection, and lot-size adjustment were never
+  triggered in this run. A zero diagnostic count means "not triggered", not
+  "verified as zero". The slice itself contains relevant market states
+  (multiple limit-down opens on the 2020-02-03 pandemic reopening and 28
+  suspended bars), but none fell on the 47 fill dates. Capacity could not bind
+  at CNY 1,000,000: minimum 20-day ADV was approximately CNY 192.8 million,
+  whose 5% limit is CNY 9.64 million versus a typical CNY 333,000 order
+  (approximately 29 times headroom). Lot-size adjustment is structurally zero
+  because the strategy quantizes orders to 100 shares before execution.
+- Survivorship bias remains unresolved. The 12 securities were selected from
+  current CSI 300 constituents; `data/l1_raw/manifest.json` marks the source
+  `EXPLORATORY_TAINTED` and not point-in-time membership. This survivorship and
+  current-constituent contamination was not propagated into the artifact.
