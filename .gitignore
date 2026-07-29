@@ -223,6 +223,7 @@ data/l2_corporate_actions/*.parquet
 data/quarantine/**/*.parquet
 data/backtest_output/
 data/golden_slice/
+data/x04_evidence/
 
 # Rebuildable binary experiment artifacts; text manifests/reports remain tracked.
 artifacts/**/*.parquet
