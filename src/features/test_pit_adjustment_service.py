@@ -461,6 +461,43 @@ class PITAdjustmentServiceTest(unittest.TestCase):
             self.assertEqual(series.points[1].reference_price, Decimal("9.50"))
             self.assertEqual(series.points[1].adjusted_return, Decimal("0.1"))
 
+    def test_rights_issue_uses_shared_production_schema_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = _service(
+                tmpdir,
+                daily_rows=[
+                    _bar_row("000001", date(2026, 1, 2), "10.00"),
+                    _bar_row("000001", date(2026, 1, 5), "9.66"),
+                ],
+                ca_rows=[
+                    _ca_row(
+                        "000001",
+                        date(2026, 1, 5),
+                        "RIGHTS_ISSUE",
+                        share_ratio="0.25",
+                        rights_price_per_share="6.00",
+                        available_at="2026-01-02T15:00:00+08:00",
+                    )
+                ],
+            )
+
+            series = service.daily_adjusted_return_series(
+                "000001",
+                date(2026, 1, 5),
+                date(2026, 1, 5),
+                ASOF,
+            )
+
+            point = series.points[0]
+            # Official formula hand calculation:
+            # ((10.00 - 0) + 6.00 * 0.25) / (1 + 0 + 0.25) = 9.20.
+            self.assertEqual(point.status, AdjustedReturnStatus.OK)
+            self.assertEqual(point.reference_price, Decimal("9.20"))
+            self.assertEqual(
+                point.adjusted_return,
+                Decimal("9.66") / Decimal("9.20") - Decimal("1"),
+            )
+
     def test_open_to_open_adjusted_return_uses_same_ca_window_and_keeps_close_path_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = _service(

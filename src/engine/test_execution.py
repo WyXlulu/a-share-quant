@@ -99,16 +99,27 @@ class T1OpenExecutorTest(unittest.TestCase):
         self.assertEqual(fee.net_amount, Decimal("333079.67"))
 
     def test_fee_schedule_resolves_rates_by_effective_date(self) -> None:
+        """Transfer-fee boundary follows the externally sourced 2022 cutover."""
         schedule = FeeSchedule()
 
         before_stamp = schedule.resolve(date(2023, 8, 27))
-        before_transfer_cut = schedule.resolve(date(2025, 4, 28))
-        after_transfer_cut = schedule.resolve(date(2025, 4, 29))
+        before_transfer_cut = schedule.resolve(date(2022, 4, 28))
+        after_transfer_cut = schedule.resolve(date(2022, 4, 29))
 
         self.assertEqual(before_stamp.stamp_duty_rate, Decimal("0.001"))
-        self.assertEqual(before_transfer_cut.stamp_duty_rate, Decimal("0.0005"))
+        self.assertEqual(before_transfer_cut.stamp_duty_rate, Decimal("0.001"))
         self.assertEqual(before_transfer_cut.transfer_fee_rate, Decimal("0.00002"))
         self.assertEqual(after_transfer_cut.transfer_fee_rate, Decimal("0.00001"))
+
+    def test_2025_04_29_is_not_a_transfer_fee_cutover(self) -> None:
+        # Sources: http://finance.people.com.cn/n1/2022/0429/c1004-32411923.html
+        # and https://cn.chinadaily.com.cn/a/202204/29/WS626b36f0a3101c3ee7ad319f.html
+        schedule = FeeSchedule()
+
+        self.assertEqual(
+            schedule.resolve(date(2025, 4, 29)).transfer_fee_rate,
+            Decimal("0.00001"),
+        )
 
     def test_fee_schedule_fails_closed_before_known_stamp_duty_rate(self) -> None:
         with self.assertRaisesRegex(FeeScheduleError, "无该日期的已知费率"):
@@ -380,6 +391,60 @@ class T1OpenExecutorTest(unittest.TestCase):
             self.assertEqual(fill.status, "REJECTED")
             self.assertEqual(fill.reason, "LIMIT_UP_NO_BUY")
             self.assertEqual(fill.limit_reference_status, "LIMIT_REF_ADJUSTED_FOR_CA")
+
+    def test_rights_issue_limit_reference_uses_production_schema_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portal = _portal(
+                tmpdir,
+                [
+                    _bar_row(
+                        "000001",
+                        "2026-06-29",
+                        open_price=10.0,
+                        high=10.0,
+                        low=10.0,
+                        close=10.0,
+                    ),
+                    _bar_row(
+                        "000001",
+                        "2026-06-30",
+                        open_price=9.33,
+                        high=9.33,
+                        low=9.33,
+                        close=9.33,
+                    ),
+                ],
+                corporate_action_rows=[
+                    _corporate_action_row(
+                        "000001",
+                        "2026-06-30",
+                        "RIGHTS_ISSUE",
+                        share_ratio=0.2,
+                        rights_price_per_share=6.0,
+                        available_at="2026-06-29T15:00:00+08:00",
+                    )
+                ],
+            )
+            executor = T1OpenExecutor(
+                _calendar(),
+                portal,
+                end_date=date(2026, 6, 30),
+            )
+            with patch(
+                "src.engine.execution.calculate_ex_right_reference_price",
+                wraps=calculate_ex_right_reference_price,
+            ) as pricing_formula:
+                locked = executor.lock_order(
+                    _intent("000001", date(2026, 6, 29), side="buy"),
+                    available_cash=Decimal("2000.00"),
+                )
+
+            self.assertIsInstance(locked, LockedOrder)
+            # Official formula hand calculation:
+            # ((10.00 - 0) + 6.00 * 0.20) / (1 + 0 + 0.20) = 9.3333...
+            self.assertEqual(pricing_formula.call_args.args[4], Decimal("0.2"))
+            self.assertEqual(pricing_formula.call_args.args[5], Decimal("6.0"))
+            self.assertEqual(locked.reference_price, Decimal("9.33"))
 
     def test_non_ex_right_day_limit_reference_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -932,6 +997,7 @@ def _corporate_action_row(
     cash_dividend_per_share: float = 0.0,
     ex_right_cash_deduction_per_share: float | None | object = _EX_RIGHT_COLUMN_MISSING,
     share_ratio: float = 0.0,
+    rights_price_per_share: float | None | object = _EX_RIGHT_COLUMN_MISSING,
     available_at: str,
 ) -> dict[str, object]:
     row = {
@@ -947,6 +1013,8 @@ def _corporate_action_row(
     }
     if ex_right_cash_deduction_per_share is not _EX_RIGHT_COLUMN_MISSING:
         row["ex_right_cash_deduction_per_share"] = ex_right_cash_deduction_per_share
+    if rights_price_per_share is not _EX_RIGHT_COLUMN_MISSING:
+        row["rights_price_per_share"] = rights_price_per_share
     return row
 
 

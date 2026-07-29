@@ -7,6 +7,7 @@ from .contracts import (
     SOURCE_SEMANTICS_UNVERIFIED_FOR_PIT,
     TradeStatus,
 )
+from .corporate_action_inputs import extract_rights_issue_terms
 from .corporate_action_pricing import (
     CorporateActionPricingRuleError,
     CorporateActionReferencePriceRule,
@@ -39,5 +40,6 @@ __all__ = [
     "TradeStatus",
     "calculate_ex_right_reference_price",
     "evaluate_corporate_action_visibility",
+    "extract_rights_issue_terms",
     "resolve_reference_price_rule",
 ]

@@ -18,6 +18,7 @@ from src.domain import (
     TradeStatus,
     calculate_ex_right_reference_price,
     evaluate_corporate_action_visibility,
+    extract_rights_issue_terms,
 )
 from src.market_calendar import TradingCalendar
 
@@ -710,10 +711,7 @@ def _pricing_inputs(actions: pd.DataFrame) -> tuple[Decimal, Decimal, Decimal, D
     for row in actions.itertuples(index=False):
         action_type = str(getattr(row, "action_type"))
         if action_type == "RIGHTS_ISSUE":
-            row_rights_ratio = _decimal_or_zero(_optional_field(row, "rights_ratio", getattr(row, "share_ratio")))
-            row_rights_price = _rights_price(row)
-            if row_rights_ratio > Decimal("0") and row_rights_price is None:
-                raise DataContractError("RIGHTS_ISSUE missing rights_price; cannot construct PIT factor")
+            row_rights_ratio, row_rights_price = extract_rights_issue_terms(row)
             rights_ratio += row_rights_ratio
             rights_consideration += row_rights_ratio * (row_rights_price or Decimal("0"))
             continue
@@ -803,18 +801,6 @@ def _snapshot_ids(rows: pd.DataFrame) -> list[str]:
 def _join_snapshot_ids(snapshot_ids: list[str]) -> str:
     unique = sorted(dict.fromkeys(snapshot_ids))
     return ";".join(unique)
-
-
-def _rights_price(row: Any) -> Decimal | None:
-    for field_name in ("rights_price", "rights_price_per_share"):
-        value = _optional_field(row, field_name, None)
-        if value is not None and not pd.isna(value):
-            return _decimal_or_zero(value)
-    return None
-
-
-def _optional_field(row: Any, field_name: str, default: Any) -> Any:
-    return getattr(row, field_name, default)
 
 
 def _decimal_or_none(value: Any) -> Decimal | None:

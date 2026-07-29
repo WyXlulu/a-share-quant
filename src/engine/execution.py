@@ -10,7 +10,12 @@ import pandas as pd
 
 from src.market_calendar import TradingCalendar
 from src.data import PITDataPortal
-from src.domain import DataContractError, TradeStatus, calculate_ex_right_reference_price
+from src.domain import (
+    DataContractError,
+    TradeStatus,
+    calculate_ex_right_reference_price,
+    extract_rights_issue_terms,
+)
 from src.engine.dummy_strategy import OrderIntent
 
 if TYPE_CHECKING:
@@ -230,15 +235,27 @@ class FeeSchedule:
     # Broker commission is configurable; default is a common retail tier, not an exchange rule.
     commission_rate: Decimal = Decimal("0.00025")
     commission_minimum: Decimal = Decimal("5.00")
-    # Stamp duty is sell-side only since 2008-09-19: 0.1%, cut to 0.05% on 2023-08-28.
+    # Stamp duty became sell-side-only at 0.1% on 2008-09-19 and was halved to
+    # 0.05% on 2023-08-28. Sources (retrieved 2026-07-29):
+    # https://www.mof.gov.cn/zhengwuxinxi/caizhengxinwen/200809/t20080919_76432.htm
+    # https://fgk.chinatax.gov.cn/zcfgk/c102416/c5211343/content.html
     stamp_duty_rates: tuple[EffectiveRate, ...] = (
         EffectiveRate(date(2008, 9, 19), Decimal("0.001")),
         EffectiveRate(date(2023, 8, 28), Decimal("0.0005")),
     )
-    # Transfer fee: 0.002% before 2025-04-29, 0.001% from 2025-04-29.
+    # ChinaClear cut the unified A-share transfer fee from 0.02 per mille to
+    # 0.01 per mille on 2022-04-29. Sources (retrieved 2026-07-28):
+    # http://finance.people.com.cn/n1/2022/0429/c1004-32411923.html
+    # https://cn.chinadaily.com.cn/a/202204/29/WS626b36f0a3101c3ee7ad319f.html
     transfer_fee_rates: tuple[EffectiveRate, ...] = (
+        # Placeholder, not an official effective date. The unified 0.02 per
+        # mille standard began on 2015-08-01; before then SSE charged 0.3 per
+        # mille of face value and SZSE charged 0.0255 per mille of turnover.
+        # The July 2015 baseline has 14 fills and CNY 0.71 of unreliable fees.
+        # https://www.sse.com.cn/aboutus/mediacenter/hotandd/c/c_20150912_3988866.shtml
+        # https://www.szse.cn/aboutus/trends/news/t20150701_518630.html
         EffectiveRate(date(1900, 1, 1), Decimal("0.00002")),
-        EffectiveRate(date(2025, 4, 29), Decimal("0.00001")),
+        EffectiveRate(date(2022, 4, 29), Decimal("0.00001")),
     )
 
     def resolve(self, execution_ts: date | datetime | pd.Timestamp) -> ResolvedFeeRates:
@@ -975,10 +992,11 @@ def _corporate_action_adjustments(actions: pd.DataFrame) -> tuple[Decimal, Decim
     for row in actions.itertuples(index=False):
         action_type = str(getattr(row, "action_type"))
         if action_type == "RIGHTS_ISSUE":
-            row_rights_ratio = _decimal_or_zero(getattr(row, "rights_ratio", Decimal("0.00")))
-            row_rights_price = _decimal_or_zero(getattr(row, "rights_price", Decimal("0.00")))
+            row_rights_ratio, row_rights_price = extract_rights_issue_terms(row)
             rights_ratio += row_rights_ratio
-            rights_consideration += row_rights_ratio * row_rights_price
+            rights_consideration += row_rights_ratio * (
+                row_rights_price or Decimal("0.00")
+            )
             continue
         if action_type not in ("CASH_DIVIDEND", "STOCK_DIVIDEND"):
             continue
