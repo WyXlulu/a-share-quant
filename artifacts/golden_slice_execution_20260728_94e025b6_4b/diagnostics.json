@@ -1,5 +1,24 @@
 {
   "audit_status": "PENDING_AUDIT",
+  "attribution": {
+    "business_field_changes": {
+      "corporate_action": 0,
+      "fill_outcome": 0,
+      "order": 0
+    },
+    "corrected_transfer_fee_rate": "0.00001",
+    "cutover_date": "2022-04-29",
+    "new_post_cutover_transfer_fee": "68.60",
+    "new_total_fees": "9909.96",
+    "old_post_cutover_transfer_fee": "137.27",
+    "old_total_fees": "9978.63",
+    "post_cutover_fill_count": 41,
+    "previous_artifact_status": "SUPERSEDED",
+    "prior_estimated_reduction": "approximately 68.63",
+    "realized_reduction": "68.67",
+    "rounding_note": "The realized reduction is the exact sum of per-fill cent-rounded transfer-fee changes.",
+    "superseded_transfer_fee_rate": "0.00002"
+  },
   "deterministic_ledger_audit": {
     "cash_dividends": [
       {
@@ -86,7 +105,7 @@
     "rejection_reason_counts": {
       "CASH_INSUFFICIENT": 31
     },
-    "total_fees": "9978.63"
+    "total_fees": "9909.96"
   },
   "experiment_id": "golden_slice_execution_20260728_94e025b6",
   "limitations": {
@@ -354,8 +373,8 @@
         "security_id": "601398",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "438481.36",
-        "total_cost_basis_before": "438481.36",
+        "total_cost_basis_after": "438476.97",
+        "total_cost_basis_before": "438476.97",
         "trade_date": "2022-07-12"
       },
       {
@@ -368,8 +387,8 @@
         "security_id": "601398",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "438481.36",
-        "total_cost_basis_before": "438481.36",
+        "total_cost_basis_after": "438476.97",
+        "total_cost_basis_before": "438476.97",
         "trade_date": "2022-07-13"
       },
       {
@@ -382,8 +401,8 @@
         "security_id": "600028",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "441021.39",
-        "total_cost_basis_before": "441021.39",
+        "total_cost_basis_after": "441021.09",
+        "total_cost_basis_before": "441021.09",
         "trade_date": "2022-09-19"
       },
       {
@@ -396,8 +415,8 @@
         "security_id": "600028",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "441021.39",
-        "total_cost_basis_before": "441021.39",
+        "total_cost_basis_after": "441021.09",
+        "total_cost_basis_before": "441021.09",
         "trade_date": "2022-09-20"
       },
       {
@@ -410,8 +429,8 @@
         "security_id": "600028",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "364611.01",
-        "total_cost_basis_before": "364611.01",
+        "total_cost_basis_after": "364610.47",
+        "total_cost_basis_before": "364610.47",
         "trade_date": "2023-06-21"
       },
       {
@@ -424,8 +443,8 @@
         "security_id": "600028",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "364611.01",
-        "total_cost_basis_before": "364611.01",
+        "total_cost_basis_after": "364610.47",
+        "total_cost_basis_before": "364610.47",
         "trade_date": "2023-06-26"
       },
       {
@@ -438,8 +457,8 @@
         "security_id": "000651",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "573059.69",
-        "total_cost_basis_before": "573059.69",
+        "total_cost_basis_after": "573053.96",
+        "total_cost_basis_before": "573053.96",
         "trade_date": "2023-08-09"
       },
       {
@@ -452,8 +471,8 @@
         "security_id": "000651",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "573059.69",
-        "total_cost_basis_before": "573059.69",
+        "total_cost_basis_after": "573053.96",
+        "total_cost_basis_before": "573053.96",
         "trade_date": "2023-08-10"
       },
       {
@@ -466,8 +485,8 @@
         "security_id": "600028",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "415689.34",
-        "total_cost_basis_before": "415689.34",
+        "total_cost_basis_after": "415688.29",
+        "total_cost_basis_before": "415688.29",
         "trade_date": "2023-09-15"
       },
       {
@@ -480,8 +499,8 @@
         "security_id": "600028",
         "sellable_date": null,
         "share_delta": 0,
-        "total_cost_basis_after": "415689.34",
-        "total_cost_basis_before": "415689.34",
+        "total_cost_basis_after": "415688.29",
+        "total_cost_basis_before": "415688.29",
         "trade_date": "2023-09-18"
       }
     ]

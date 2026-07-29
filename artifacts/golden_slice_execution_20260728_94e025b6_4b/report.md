@@ -14,6 +14,23 @@
 > Whether the project reaches `BACKTEST_VALIDATED` remains subject to the ten
 > post-run audit conditions in §12.3. This run does not self-certify.
 
+## M-04 Rerun Attribution
+
+- This artifact was regenerated after the M-04 transfer-fee effective-date
+  correction. It supersedes the previous 4b artifact generated with the
+  incorrect 2025-04-29 cutover.
+- For executions on or after 2022-04-29, the transfer-fee rate is corrected
+  from `0.00002` to `0.00001`.
+- The same 41 post-cutover fills now carry aggregate transfer fees of `68.60`
+  instead of `137.27`; total fees changed from `9978.63` to `9909.96`, a
+  reduction of `68.67`.
+- The earlier estimate of approximately `68.63` did not reproduce the
+  per-fill cent-rounding path. The observed `68.67` reduction is exactly the
+  sum of the 41 per-fill transfer-fee changes.
+- Order business fields, fill outcomes, rejection reasons, and corporate
+  action business fields are unchanged. Only fee fields and downstream
+  cumulative cash/cost state changed.
+
 ## Status
 
 - evidence_status: `EXPLORATORY_TAINTED`
@@ -58,7 +75,7 @@ claim without regenerating 4a.
 - requested outcome categories: `{"filled": 91, "limit_up_or_down_rejected": 0, "suspended": 0, "cash_insufficient": 31, "capacity_rejected": 0, "no_open_price": 0}`
 - capacity capped: `0`
 - lot-size adjustments: `0`
-- total fees under Phase 1 test tier: `9978.63`
+- total fees under Phase 1 test tier: `9909.96`
 - maximum accounting identity deviation: `0.00`
 
 ## Corporate Actions
